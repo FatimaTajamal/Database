@@ -8,3 +8,14 @@ GEMINI_API_KEY=AIzaSyDh8gND41pOMzHXuSNOohL7s9PBecYinEE
 # Server config
 PORT=5000
 NODE_ENV=development
+
+# Admin credentials and secrets
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD_HASH=$2b$10$Qv7o1dVU1hkG5S2za51BDu6olDYkafuOtvVP2TKHPcyGP6BdV4XRW
+ADMIN_API_KEY=CookGenie123
+
+# JWT secret (optional, for future use)
+JWT_SECRET=CookGenie123
+
+# Session secret for sessions
+SESSION_SECRET=CookGenie123
