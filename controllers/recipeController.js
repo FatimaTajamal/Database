@@ -87,13 +87,16 @@ const createRecipe = async (req, res) => {
 
 const updateLastViewed = async (req, res, next) => {
   try {
-    await Recipe.findByIdAndUpdate(req.params.id, {
-      lastViewed: Date.now()
-    });
+    const recipeId = req.params.id;
+    // Update lastViewed timestamp in DB
+    await Recipe.findByIdAndUpdate(recipeId, { lastViewed: new Date() });
+    
+    // 🔥 Important: pass control to next middleware
     next();
   } catch (error) {
-    console.error("Error updating lastViewed:", error);
-    next();
+    console.error(error);
+    // Forward error to Express error handler
+    next(error);
   }
 };
 
