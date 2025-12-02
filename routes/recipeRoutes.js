@@ -1,60 +1,59 @@
 // const express = require('express');
 // const router = express.Router();
 // const {
-//   // Import the fast Paged controller for lists
-//   getPagedRecipes, 
-//   // Import the slow getAllRecipes for the stats dashboard (to be optimized)
-//   getAllRecipes, 
-//   getRecipeById,
-//   createRecipe,
-//   updateRecipe,
-//   deleteRecipe,
-// // Note: searchRecipes is no longer needed/exported
+//   getPagedRecipes,
+//   getAllRecipes,
+//   getRecipeById,
+//   createRecipe,
+//   updateRecipe,
+//   deleteRecipe
 // } = require('../controllers/recipeController');
 // const { authenticateToken } = require('../middleware/auth');
 
-// // Public routes
+// // ================== PUBLIC ROUTES ==================
+// // Stats endpoint (used for dashboard)
+// router.get('/recipes/stats', getAllRecipes);
 
-// // 1. New High-Performance Endpoint: Used by the React table for pagination/search/filter
-// router.get('/recipes/paged', getPagedRecipes);
+// // Main paginated recipes endpoint
+// router.get('/recipes', getPagedRecipes);
 
-// // 2. Default List Endpoint: Redirects to the slow endpoint, which is used by your 
-// // fetchRecipesForStats function to populate the dashboard.
-// router.get('/recipes', getAllRecipes); 
-
-// // The dedicated search route is removed, as /recipes/paged handles search
-// // router.get('/recipes/search', searchRecipes); // REMOVED
-
+// // Single recipe by ID
 // router.get('/recipes/:id', getRecipeById);
 
-// // Protected routes (require authentication)
+// // ================== PROTECTED ROUTES ==================
 // router.post('/recipes', authenticateToken, createRecipe);
 // router.put('/recipes/:id', authenticateToken, updateRecipe);
 // router.delete('/recipes/:id', authenticateToken, deleteRecipe);
 
 // module.exports = router;
 
+
 const express = require('express');
 const router = express.Router();
+
 const {
   getPagedRecipes,
   getAllRecipes,
   getRecipeById,
   createRecipe,
   updateRecipe,
-  deleteRecipe
+  deleteRecipe,
+  updateLastViewed    // 🔥 New Controller
 } = require('../controllers/recipeController');
+
 const { authenticateToken } = require('../middleware/auth');
 
 // ================== PUBLIC ROUTES ==================
-// Stats endpoint (used for dashboard)
+
+// Stats endpoint — now gets recent recipes sorted by lastViewed
 router.get('/recipes/stats', getAllRecipes);
+
+// Single recipe by ID
+// 🔥 Updated: first update lastViewed, then return recipe
+router.get('/recipes/:id', updateLastViewed, getRecipeById);
 
 // Main paginated recipes endpoint
 router.get('/recipes', getPagedRecipes);
-
-// Single recipe by ID
-router.get('/recipes/:id', getRecipeById);
 
 // ================== PROTECTED ROUTES ==================
 router.post('/recipes', authenticateToken, createRecipe);

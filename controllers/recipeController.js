@@ -49,13 +49,17 @@ const getPagedRecipes = async (req, res) => {
 // ================== ALL RECIPES (for stats/dashboard) ==================
 const getAllRecipes = async (req, res) => {
     try {
-        const recipes = await Recipe.find().sort({ createdAt: -1 });
+        const recipes = await Recipe.find()
+            .sort({ lastViewed: -1, createdAt: -1 })  // 🔥 Most recently viewed first
+            .limit(20);  // dashboard needs only a few
+
         res.json(recipes);
     } catch (error) {
         console.error('Error fetching all recipes:', error);
         res.status(500).json({ message: 'Error fetching recipes', error: error.message });
     }
 };
+
 
 // ================== GET SINGLE RECIPE ==================
 const getRecipeById = async (req, res) => {
@@ -79,6 +83,18 @@ const createRecipe = async (req, res) => {
         console.error('Error creating recipe:', error);
         res.status(500).json({ message: 'Error creating recipe', error: error.message });
     }
+};
+
+const updateLastViewed = async (req, res, next) => {
+  try {
+    await Recipe.findByIdAndUpdate(req.params.id, {
+      lastViewed: Date.now()
+    });
+    next();
+  } catch (error) {
+    console.error("Error updating lastViewed:", error);
+    next();
+  }
 };
 
 // ================== UPDATE RECIPE ==================
