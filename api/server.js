@@ -35,6 +35,10 @@ app.use('/api', require('../routes/recipeRoutes'));
 app.get('/health', (req, res) => {
   res.json({ status: 'Server running on Vercel!' });
 });
+app.get('/api/admin/debug', (req, res) => {
+  res.json({ ok: true, message: 'Admin routes reachable' });
+});
+
 
 // ================= Debug route (optional, for testing) =================
 // Uncomment to test admin route reachability
