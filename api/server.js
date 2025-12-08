@@ -83,3 +83,10 @@ app.use((err, req, res, next) => {
 // ❗ EXPORT app for Vercel serverless
 module.exports = app;
 
+if (require.main === module) {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}
+
