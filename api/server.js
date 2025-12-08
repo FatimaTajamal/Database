@@ -35,17 +35,8 @@ app.use('/api', require('../routes/recipeRoutes'));
 app.get('/health', (req, res) => {
   res.json({ status: 'Server running on Vercel!' });
 });
-app.get('/api/admin/debug', (req, res) => {
-  res.json({ ok: true, message: 'Admin routes reachable' });
-});
 
-app.post('/api/admin/direct-post', (req, res) => {
-    // This is a placeholder response for the test
-    if (req.body && req.body.test === 'success') {
-        return res.json({ status: 'SUCCESS', message: 'Direct POST route is working!' });
-    }
-    res.json({ status: 'FAILED', message: 'Direct POST received, but body check failed.' });
-});
+
 
 
 // ================= Debug route (optional, for testing) =================
