@@ -23,6 +23,30 @@ app.use(
 app.use(express.json()); // Parse JSON
 app.use(express.urlencoded({ extended: true })); // Parse form data
 
+
+//Handle CORS
+// ---- FIX: Handle preflight on Vercel ----
+app.options(/.*/, (req, res) => {
+  const allowedOrigins = [
+    'http://localhost:3000',
+    'http://localhost:5173',
+    'https://admin-portal-rosy-six.vercel.app'
+  ];
+
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+  return res.status(200).end();
+});
+
+
+
 // ================= Routes =================
 
 // 🔹 Admin routes must come BEFORE recipe routes
