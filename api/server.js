@@ -5,10 +5,10 @@ const connectDB = require('../config/db');
 
 const app = express();
 
-// Connect DB (runs on every cold start)
+// Connect to MongoDB
 connectDB();
 
-// Middleware
+// ================= Middleware =================
 app.use(
   cors({
     origin: [
@@ -20,91 +20,39 @@ app.use(
   })
 );
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json()); // Parse JSON
+app.use(express.urlencoded({ extended: true })); // Parse form data
 
-// Routes
-app.use('/api', require('../routes/recipeRoutes'));
+// ================= Routes =================
+
+// 🔹 Admin routes must come BEFORE recipe routes
 app.use('/api/admin', require('../routes/adminRoutes'));
 
+// Recipe routes
+app.use('/api', require('../routes/recipeRoutes'));
+
+// Health check route
 app.get('/health', (req, res) => {
   res.json({ status: 'Server running on Vercel!' });
 });
 
-// 404 handler
+// ================= Debug route (optional, for testing) =================
+// Uncomment to test admin route reachability
+// app.get('/api/admin/debug', (req, res) => {
+//   res.json({ ok: true, message: 'Admin routes reachable' });
+// });
+
+// ================= 404 Handler =================
 app.use((req, res) => {
   res.status(404).json({ message: 'Route not found', path: req.originalUrl });
 });
 
-// Global error handler
+// ================= Global Error Handler =================
 app.use((err, req, res, next) => {
   console.error('🔥 Server Error:', err.stack);
   res.status(500).json({ message: 'Something went wrong!' });
 });
 
-// ❗ EXPORT instead of listen()
+// ❗ EXPORT app for Vercel serverless
 module.exports = app;
 
-
-
-
-
-
-
-
-
-// // Load environment variables first
-// require('dotenv').config();
-
-// const express = require('express');
-// const cors = require('cors');
-// const connectDB = require('./config/db');
-
-// const app = express();
-
-// // Connect to MongoDB
-// connectDB();
-
-// // ================= Middleware =================
-// app.use(
-//   cors({
-//     origin: [
-//       'http://localhost:3000',
-//       'http://localhost:5173'
-//     ],
-//     credentials: true,
-//   })
-// );
-
-// app.use(express.json()); // Parse JSON
-// app.use(express.urlencoded({ extended: true })); // Parse form data
-
-// // ================= Routes =================
-// app.use('/api', require('./routes/recipeRoutes'));
-// app.use('/api/admin', require('./routes/adminRoutes'));
-
-// // Health check route
-// app.get('/health', (req, res) => {
-//   res.json({ status: 'Server is running' });
-// });
-
-// // Handle unknown routes (404)
-// app.use((req, res) => {
-//   res.status(404).json({
-//     message: 'Route not found',
-//     path: req.originalUrl,
-//   });
-// });
-
-// // ================= Global Error Handler =================
-// app.use((err, req, res, next) => {
-//   console.error('🔥 Server Error:', err.stack);
-//   res.status(500).json({ message: 'Something went wrong!' });
-// });
-
-// // ================= Start Server =================
-// const PORT = process.env.PORT || 5000;
-
-// app.listen(PORT, () => {
-//   console.log(`🚀 Server running on port ${PORT}`);
-// });
