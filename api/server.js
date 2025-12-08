@@ -1,4 +1,13 @@
 require('dotenv').config();
+
+
+console.log('🔍 Environment check on startup:', {
+  hasAdminUsername: !!process.env.ADMIN_USERNAME,
+  hasAdminPasswordHash: !!process.env.ADMIN_PASSWORD_HASH,
+  hasJWT: !!process.env.JWT_SECRET,
+  hasMongoURI: !!process.env.MONGODB_URI
+});
+
 const express = require('express');
 const cors = require('cors');
 const connectDB = require('../config/db');
