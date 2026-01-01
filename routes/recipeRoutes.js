@@ -123,7 +123,5 @@ router.post('/suggestions-by-category', getSuggestionsByCategory);
 
 // Get multiple recipes
 router.post('/multiple', getMultipleRecipes);
-// Add this line with your other routes
-router.post('/test-gemini', testGemini);
 
 module.exports = router;
