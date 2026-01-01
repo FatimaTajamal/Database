@@ -192,170 +192,135 @@ const { StateGraph, END } = require("@langchain/langgraph");
 const Recipe = require("../models/Recipe");
 const axios = require("axios");
 
-// ---------------------------------------------------------
-// 1. LANGGRAPH STATE DEFINITION
-// ---------------------------------------------------------
-// This defines how the data flows and updates between nodes
-const recipeStateSchema = {
-  query: { value: (x, y) => y ?? x, default: () => "" },
-  recipes: { value: (x, y) => y ?? x, default: () => [] },
-  source: { value: (x, y) => y ?? x, default: () => "" },
-  error: { value: (x, y) => y ?? x, default: () => null },
-};
-
-// ---------------------------------------------------------
-// 2. NODES (The logic steps)
-// ---------------------------------------------------------
-
 /**
- * Node 1: Search Database
- * Checks if the recipe exists locally before bothering the API.
+ * 1. NODE: SEARCH DATABASE
  */
 async function searchDatabase(state) {
-  console.log(`[Database Node] Searching for: ${state.query}`);
-  try {
-    const escapedQuery = state.query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    console.log(`[1] Searching DB for: "${state.query}"`);
+    try {
+        const escapedQuery = state.query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        
+        // We only stop at the DB if we find an EXACT match.
+        // If we want the AI to provide something fresh for partial matches, 
+        // we must not return a recipe here.
+        const recipe = await Recipe.findOne({
+            title: { $regex: `^${escapedQuery}$`, $options: "i" }
+        });
 
-    // Tier 1: Strict match (Best for deciding if we need Gemini)
-    const localRecipes = await Recipe.find({
-      title: { $regex: `^${escapedQuery}$`, $options: "i" }
-    }).limit(5);
+        if (recipe) {
+            console.log("✅ Exact match found in DB.");
+            return { ...state, recipes: [recipe], source: "database" };
+        }
 
-    if (localRecipes.length > 0) {
-      console.log(`[Database Node] Found match in DB.`);
-      return { recipes: localRecipes, source: "database" };
+        console.log("❌ No exact match. Flagging for Gemini...");
+        return { ...state, source: "none" };
+    } catch (err) {
+        return { ...state, error: "DB Error" };
     }
-
-    console.log("[Database Node] No match found. Proceeding...");
-    return { source: "none", recipes: [] };
-  } catch (err) {
-    console.error("[Database Node] Error:", err);
-    return { error: "Database search failed" };
-  }
 }
 
 /**
- * Node 2: Gemini API
- * Generates a recipe if the database came up empty.
+ * 2. NODE: CALL GEMINI API
  */
 async function callGeminiAPI(state) {
-  console.log(`[Gemini Node] Generating recipe for: ${state.query}`);
-  const geminiApiKey = process.env.GEMINI_API_KEY;
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiApiKey}`;
-
-  try {
-    const response = await axios.post(
-      geminiUrl,
-      {
-        contents: [{
-          parts: [{
-            text: `Generate a detailed recipe for "${state.query}". 
-            Return ONLY a pure JSON object, NO markdown, NO backticks:
-            {
-              "title": "recipe name",
-              "ingredients": ["ingredient 1", "ingredient 2"],
-              "instructions": ["step 1", "step 2"],
-              "dietType": "vegetarian/non-vegetarian/vegan",
-              "cuisine": "cuisine type",
-              "calories": 500
-            }`
-          }]
-        }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
-      },
-      { headers: { "Content-Type": "application/json" } }
-    );
-
-    let aiText = response.data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+    console.log(`[2] Calling Gemini API for: "${state.query}"`);
     
-    // Clean potential markdown formatting
-    aiText = aiText.replace(/```json/g, "").replace(/```/g, "").trim();
+    // Ensure you use gemini-1.5-flash unless you are sure 2.0 is in your tier
+    const apiKey = process.env.GEMINI_API_KEY;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
 
-    const parsedRecipe = JSON.parse(aiText);
+    try {
+        const response = await axios.post(url, {
+            contents: [{
+                parts: [{
+                    text: `Return ONLY a JSON object for a recipe titled "${state.query}". 
+                    Format: {"title": "", "ingredients": [], "instructions": [], "dietType": "", "cuisine": "", "calories": 0}`
+                }]
+            }]
+        });
 
-    // Save the AI result to your Database for future use
-    const savedRecipe = await Recipe.create({
-      title: parsedRecipe.title || state.query,
-      ingredients: parsedRecipe.ingredients || [],
-      instructions: parsedRecipe.instructions || [],
-      dietType: parsedRecipe.dietType || "",
-      cuisine: parsedRecipe.cuisine || "",
-      calories: parsedRecipe.calories || 0,
-      source: "gemini",
-    });
+        let text = response.data.candidates[0].content.parts[0].text;
+        // Clean markdown backticks
+        text = text.replace(/```json/g, "").replace(/```/g, "").trim();
+        const data = JSON.parse(text);
 
-    console.log("[Gemini Node] Recipe saved to DB successfully.");
-    return { recipes: [savedRecipe], source: "gemini" };
+        // Save to DB
+        const newRecipe = await Recipe.create({
+            ...data,
+            source: "gemini"
+        });
 
-  } catch (err) {
-    console.error("[Gemini Node] Error:", err.response?.data || err.message);
-    return { error: "Gemini API failed to generate recipe" };
-  }
+        console.log("✅ Gemini generated and saved recipe.");
+        return { ...state, recipes: [newRecipe], source: "gemini" };
+    } catch (err) {
+        console.error("Gemini Error:", err.message);
+        return { ...state, error: "Gemini API failed" };
+    }
 }
 
-// ---------------------------------------------------------
-// 3. ROUTER & GRAPH COMPILATION
-// ---------------------------------------------------------
-
+/**
+ * 3. ROUTER: DECIDE WHERE TO GO
+ */
 function routeDecision(state) {
-  if (state.error) return END;
-  // If we found something in the DB, stop here.
-  if (state.source === "database") return END;
-  // Otherwise, go to Gemini.
-  return "gemini";
+    // If the database node didn't find anything (source is still "none"), go to gemini
+    if (state.source === "none") {
+        console.log("-> Router: Moving to Gemini Node");
+        return "gemini";
+    }
+    console.log("-> Router: Ending process");
+    return END;
 }
 
-const workflow = new StateGraph({ channels: recipeStateSchema });
+/**
+ * 4. BUILD THE GRAPH
+ */
+const workflow = new StateGraph({
+    // Defining the state keys
+    channels: {
+        query: null,
+        recipes: null,
+        source: null,
+        error: null
+    }
+});
 
 workflow.addNode("database", searchDatabase);
 workflow.addNode("gemini", callGeminiAPI);
 
 workflow.setEntryPoint("database");
-workflow.addConditionalEdges("database", routeDecision);
+
+workflow.addConditionalEdges("database", routeDecision, {
+    gemini: "gemini",
+    [END]: END
+});
+
 workflow.addEdge("gemini", END);
 
 const recipeGraph = workflow.compile();
 
-// ---------------------------------------------------------
-// 4. EXPORTED CONTROLLER FUNCTION
-// ---------------------------------------------------------
-
 /**
- * This is the function your Express router will call.
- * POST /api/recipes/generate
+ * 5. EXPRESS CONTROLLER
  */
-const generateRecipeWithGraph = async (req, res) => {
-  const { query } = req.body;
+const generateRecipe = async (req, res) => {
+    try {
+        const { query } = req.body;
+        
+        // Initializing state
+        const input = { 
+            query: query, 
+            recipes: [], 
+            source: "none", // Default to none so router knows to check Gemini
+            error: null 
+        };
 
-  if (!query) {
-    return res.status(400).json({ error: "Query is required" });
-  }
+        const result = await recipeGraph.invoke(input);
 
-  try {
-    // Execute the LangGraph
-    const finalState = await recipeGraph.invoke({
-      query: query,
-      recipes: [],
-      source: "",
-      error: null
-    });
-
-    if (finalState.error) {
-      return res.status(500).json({ error: finalState.error });
+        if (result.error) return res.status(500).json({ error: result.error });
+        
+        res.json(result.recipes);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
     }
-
-    res.status(200).json({
-      success: true,
-      source: finalState.source,
-      data: finalState.recipes
-    });
-
-  } catch (error) {
-    console.error("Graph Execution Error:", error);
-    res.status(500).json({ error: "Internal Server Error" });
-  }
 };
 
-module.exports = {
-  generateRecipeWithGraph
-};
+module.exports = { generateRecipe };
