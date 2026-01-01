@@ -107,18 +107,22 @@ router.delete('/recipes/:id', authenticateToken, deleteRecipe);
 // ================== FLUTTER APP ROUTES ==================
 
 // Generate single recipe (LangGraph: DB → Gemini if not found)
-router.post('/recipe/generate', generateRecipe);
+// ================== FLUTTER APP ROUTES ==================
+
+// Generate single recipe
+router.post('/generate', generateRecipe);
 
 // Get recipes by available ingredients
-router.post('/recipe/by-ingredients', getRecipesByIngredients);
+router.post('/by-ingredients', getRecipesByIngredients);
 
-// Get recipe suggestions (for voice search)
-router.post('/recipe/suggestions', getRecipeSuggestions);
+// Get recipe suggestions
+router.post('/suggestions', getRecipeSuggestions);
 
 // Get suggestions by category and time of day
-router.post('/recipe/suggestions-by-category', getSuggestionsByCategory);
+router.post('/suggestions-by-category', getSuggestionsByCategory);
 
-// Get multiple recipes at once
-router.post('/recipe/multiple', getMultipleRecipes);
+// Get multiple recipes
+router.post('/multiple', getMultipleRecipes);
+
 
 module.exports = router;
