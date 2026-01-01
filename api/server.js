@@ -5,7 +5,8 @@ console.log('🔍 Environment check on startup:', {
   hasAdminUsername: !!process.env.ADMIN_USERNAME,
   hasAdminPasswordHash: !!process.env.ADMIN_PASSWORD_HASH,
   hasJWT: !!process.env.JWT_SECRET,
-  hasMongoURI: !!process.env.MONGODB_URI
+  hasMongoURI: !!process.env.MONGODB_URI,
+  hasGeminiKey: !!process.env.GEMINI_API_KEY // 👈 ADD THIS LINE
 });
 
 const express = require('express');

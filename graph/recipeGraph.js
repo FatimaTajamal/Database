@@ -192,135 +192,81 @@ const { StateGraph, END } = require("@langchain/langgraph");
 const Recipe = require("../models/Recipe");
 const axios = require("axios");
 
-/**
- * 1. NODE: SEARCH DATABASE
- */
+// Logic Nodes
 async function searchDatabase(state) {
-    console.log(`[1] Searching DB for: "${state.query}"`);
+    console.log(`--- STEP 1: DB SEARCH [${state.query}] ---`);
     try {
-        const escapedQuery = state.query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        
-        // We only stop at the DB if we find an EXACT match.
-        // If we want the AI to provide something fresh for partial matches, 
-        // we must not return a recipe here.
-        const recipe = await Recipe.findOne({
-            title: { $regex: `^${escapedQuery}$`, $options: "i" }
+        // Use a strict search. If it's not EXACTLY this, we want Gemini to help.
+        const recipe = await Recipe.findOne({ 
+            title: { $regex: `^${state.query}$`, $options: "i" } 
         });
 
         if (recipe) {
-            console.log("✅ Exact match found in DB.");
+            console.log("✅ Match found in Database. Skipping AI.");
             return { ...state, recipes: [recipe], source: "database" };
         }
 
-        console.log("❌ No exact match. Flagging for Gemini...");
+        console.log("❌ No exact match in DB. Moving to AI node...");
         return { ...state, source: "none" };
     } catch (err) {
-        return { ...state, error: "DB Error" };
+        console.error("DB Error:", err);
+        return { ...state, error: "Database search failed" };
     }
 }
 
-/**
- * 2. NODE: CALL GEMINI API
- */
 async function callGeminiAPI(state) {
-    console.log(`[2] Calling Gemini API for: "${state.query}"`);
-    
-    // Ensure you use gemini-1.5-flash unless you are sure 2.0 is in your tier
+    console.log(`--- STEP 2: GEMINI API CALL [${state.query}] ---`);
     const apiKey = process.env.GEMINI_API_KEY;
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+
+    if (!apiKey) {
+        console.error("Critial Error: GEMINI_API_KEY is missing from .env!");
+        return { ...state, error: "API Key Missing" };
+    }
 
     try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+        
         const response = await axios.post(url, {
-            contents: [{
-                parts: [{
-                    text: `Return ONLY a JSON object for a recipe titled "${state.query}". 
-                    Format: {"title": "", "ingredients": [], "instructions": [], "dietType": "", "cuisine": "", "calories": 0}`
-                }]
-            }]
+            contents: [{ parts: [{ text: `Provide a recipe for ${state.query} in JSON format: {"title": "...", "ingredients": [], "instructions": []}` }] }]
         });
 
-        let text = response.data.candidates[0].content.parts[0].text;
-        // Clean markdown backticks
-        text = text.replace(/```json/g, "").replace(/```/g, "").trim();
-        const data = JSON.parse(text);
+        let aiText = response.data.candidates[0].content.parts[0].text;
+        aiText = aiText.replace(/```json/g, "").replace(/```/g, "").trim();
+        const data = JSON.parse(aiText);
 
-        // Save to DB
-        const newRecipe = await Recipe.create({
-            ...data,
-            source: "gemini"
-        });
-
-        console.log("✅ Gemini generated and saved recipe.");
-        return { ...state, recipes: [newRecipe], source: "gemini" };
+        const saved = await Recipe.create({ ...data, source: "gemini" });
+        console.log("✅ Gemini Success. Recipe saved.");
+        
+        return { ...state, recipes: [saved], source: "gemini" };
     } catch (err) {
-        console.error("Gemini Error:", err.message);
-        return { ...state, error: "Gemini API failed" };
+        console.error("--- GEMINI API FAILED ---");
+        console.error("Reason:", err.response?.data || err.message);
+        return { ...state, error: "AI Generation failed" };
     }
 }
 
-/**
- * 3. ROUTER: DECIDE WHERE TO GO
- */
-function routeDecision(state) {
-    // If the database node didn't find anything (source is still "none"), go to gemini
-    if (state.source === "none") {
-        console.log("-> Router: Moving to Gemini Node");
-        return "gemini";
-    }
-    console.log("-> Router: Ending process");
-    return END;
-}
-
-/**
- * 4. BUILD THE GRAPH
- */
+// Graph Setup
 const workflow = new StateGraph({
-    // Defining the state keys
-    channels: {
-        query: null,
-        recipes: null,
-        source: null,
-        error: null
-    }
+    channels: { query: null, recipes: null, source: null, error: null }
 });
 
 workflow.addNode("database", searchDatabase);
 workflow.addNode("gemini", callGeminiAPI);
-
 workflow.setEntryPoint("database");
-
-workflow.addConditionalEdges("database", routeDecision, {
-    gemini: "gemini",
-    [END]: END
-});
-
+workflow.addConditionalEdges("database", (s) => (s.source === "none" ? "gemini" : END));
 workflow.addEdge("gemini", END);
 
 const recipeGraph = workflow.compile();
 
-/**
- * 5. EXPRESS CONTROLLER
- */
-const generateRecipe = async (req, res) => {
-    try {
-        const { query } = req.body;
-        
-        // Initializing state
-        const input = { 
-            query: query, 
-            recipes: [], 
-            source: "none", // Default to none so router knows to check Gemini
-            error: null 
-        };
+// Exported Controller
+exports.generateRecipe = async (req, res) => {
+    console.log("🚀 Request received for:", req.body.query);
+    const result = await recipeGraph.invoke({ 
+        query: req.body.query, 
+        recipes: [], 
+        source: "none" 
+    });
 
-        const result = await recipeGraph.invoke(input);
-
-        if (result.error) return res.status(500).json({ error: result.error });
-        
-        res.json(result.recipes);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+    if (result.error) return res.status(500).json({ error: result.error });
+    res.json(result.recipes);
 };
-
-module.exports = { generateRecipe };
