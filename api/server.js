@@ -58,14 +58,10 @@ app.options(/.*/, (req, res) => {
 
 // ================= Routes =================
 
-// 🔹 Admin routes must come BEFORE recipe routes
-app.use('/api/admin', require('../routes/adminRoutes'));
+app.use('/admin', require('../routes/adminRoutes'));
+app.use('/', require('../routes/recipeRoutes'));
+app.use('/cooking-hacks', require('../routes/cookingHacks'));
 
-// Recipe routes
-app.use('/api', require('../routes/recipeRoutes'));
-
-// 🔹 Cooking hacks routes (ADD THIS LINE)
-app.use('/api/cooking-hacks', require('../routes/cookingHacks'));
 
 // Health check route
 app.get('/health', (req, res) => {
