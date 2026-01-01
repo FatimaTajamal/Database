@@ -275,7 +275,7 @@ async function callGeminiAPI(state) {
 
   try {
     const geminiApiKey = process.env.GEMINI_API_KEY;
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${geminiApiKey}`;
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${geminiApiKey}`;
 
     // Build dietary preferences instruction
     const dietaryInstruction = state.dietaryPreferences && state.dietaryPreferences.length > 0
