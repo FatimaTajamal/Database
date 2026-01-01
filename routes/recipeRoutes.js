@@ -1,24 +1,59 @@
+// // const express = require('express');
+// // const router = express.Router();
+// // const {
+// //   getPagedRecipes,
+// //   getAllRecipes,
+// //   getRecipeById,
+// //   createRecipe,
+// //   updateRecipe,
+// //   deleteRecipe
+// // } = require('../controllers/recipeController');
+// // const { authenticateToken } = require('../middleware/auth');
+
+// // // ================== PUBLIC ROUTES ==================
+// // // Stats endpoint (used for dashboard)
+// // router.get('/recipes/stats', getAllRecipes);
+
+// // // Main paginated recipes endpoint
+// // router.get('/recipes', getPagedRecipes);
+
+// // // Single recipe by ID
+// // router.get('/recipes/:id', getRecipeById);
+
+// // // ================== PROTECTED ROUTES ==================
+// // router.post('/recipes', authenticateToken, createRecipe);
+// // router.put('/recipes/:id', authenticateToken, updateRecipe);
+// // router.delete('/recipes/:id', authenticateToken, deleteRecipe);
+
+// // module.exports = router;
+
+
 // const express = require('express');
 // const router = express.Router();
+
 // const {
 //   getPagedRecipes,
 //   getAllRecipes,
 //   getRecipeById,
 //   createRecipe,
 //   updateRecipe,
-//   deleteRecipe
+//   deleteRecipe,
+//   updateLastViewed    // 🔥 New Controller
 // } = require('../controllers/recipeController');
+
 // const { authenticateToken } = require('../middleware/auth');
 
 // // ================== PUBLIC ROUTES ==================
-// // Stats endpoint (used for dashboard)
+
+// // Stats endpoint — now gets recent recipes sorted by lastViewed
 // router.get('/recipes/stats', getAllRecipes);
+
+// // Single recipe by ID
+// // 🔥 Updated: first update lastViewed, then return recipe
+// router.get('/recipes/:id', updateLastViewed, getRecipeById);
 
 // // Main paginated recipes endpoint
 // router.get('/recipes', getPagedRecipes);
-
-// // Single recipe by ID
-// router.get('/recipes/:id', getRecipeById);
 
 // // ================== PROTECTED ROUTES ==================
 // router.post('/recipes', authenticateToken, createRecipe);
@@ -26,38 +61,64 @@
 // router.delete('/recipes/:id', authenticateToken, deleteRecipe);
 
 // module.exports = router;
+// 
+
 
 
 const express = require('express');
 const router = express.Router();
 
 const {
+  // Web portal routes
   getPagedRecipes,
   getAllRecipes,
   getRecipeById,
   createRecipe,
   updateRecipe,
   deleteRecipe,
-  updateLastViewed    // 🔥 New Controller
+  updateLastViewed,
+  
+  // Flutter app routes
+  generateRecipe,
+  getRecipesByIngredients,
+  getRecipeSuggestions,
+  getSuggestionsByCategory,
+  getMultipleRecipes
 } = require('../controllers/recipeController');
 
 const { authenticateToken } = require('../middleware/auth');
 
-// ================== PUBLIC ROUTES ==================
+// ================== WEB PORTAL ROUTES ==================
 
-// Stats endpoint — now gets recent recipes sorted by lastViewed
+// Stats endpoint (recently viewed recipes)
 router.get('/recipes/stats', getAllRecipes);
 
-// Single recipe by ID
-// 🔥 Updated: first update lastViewed, then return recipe
-router.get('/recipes/:id', updateLastViewed, getRecipeById);
-
-// Main paginated recipes endpoint
+// Main paginated recipes
 router.get('/recipes', getPagedRecipes);
 
-// ================== PROTECTED ROUTES ==================
+// Single recipe by ID (with lastViewed update)
+router.get('/recipes/:id', updateLastViewed, getRecipeById);
+
+// Protected routes (admin only)
 router.post('/recipes', authenticateToken, createRecipe);
 router.put('/recipes/:id', authenticateToken, updateRecipe);
 router.delete('/recipes/:id', authenticateToken, deleteRecipe);
+
+// ================== FLUTTER APP ROUTES ==================
+
+// Generate single recipe (LangGraph: DB → Gemini if not found)
+router.post('/recipe/generate', generateRecipe);
+
+// Get recipes by available ingredients
+router.post('/recipe/by-ingredients', getRecipesByIngredients);
+
+// Get recipe suggestions (for voice search)
+router.post('/recipe/suggestions', getRecipeSuggestions);
+
+// Get suggestions by category and time of day
+router.post('/recipe/suggestions-by-category', getSuggestionsByCategory);
+
+// Get multiple recipes at once
+router.post('/recipe/multiple', getMultipleRecipes);
 
 module.exports = router;
