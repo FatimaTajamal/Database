@@ -7,16 +7,45 @@ const generateRecipe = async (req, res) => {
             return res.status(400).json({ error: 'Query is required' });
         }
 
-        // 🔥 Node 1: Check MongoDB first (with more flexible matching)
+        // 🔥 Node 1: Check MongoDB first
         const normalizedQuery = query.toLowerCase().trim();
         console.log('🔍 Searching MongoDB for:', normalizedQuery);
         
+        // Try exact match first, then partial match
         let recipe = await Recipe.findOne({ 
             $or: [
-                { title: { $regex: new RegExp(normalizedQuery, 'i') } },
-                { name: { $regex: new RegExp(normalizedQuery, 'i') } }
+                { title: { $regex: new RegExp(`^${normalizedQuery}// 1. GENERATE SINGLE RECIPE (LangGraph: DB → Gemini)
+const generateRecipe = async (req, res) => {
+    try {
+        const { query, dietaryPreferences = [], allergies = [] } = req.body;
+
+        if (!query) {
+            return res.status(400).json({ error: 'Query is required' });
+        }
+
+, 'i') } },
+                { name: { $regex: new RegExp(`^${normalizedQuery}// 1. GENERATE SINGLE RECIPE (LangGraph: DB → Gemini)
+const generateRecipe = async (req, res) => {
+    try {
+        const { query, dietaryPreferences = [], allergies = [] } = req.body;
+
+        if (!query) {
+            return res.status(400).json({ error: 'Query is required' });
+        }
+
+, 'i') } }
             ]
         });
+
+        // If no exact match, try partial match
+        if (!recipe) {
+            recipe = await Recipe.findOne({ 
+                $or: [
+                    { title: { $regex: new RegExp(normalizedQuery, 'i') } },
+                    { name: { $regex: new RegExp(normalizedQuery, 'i') } }
+                ]
+            });
+        }
 
         if (recipe) {
             console.log('✅ Recipe found in MongoDB:', recipe.title || recipe.name);
