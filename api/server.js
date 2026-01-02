@@ -60,7 +60,7 @@ app.options(/.*/, (req, res) => {
 // ================= Routes =================
 
 app.use('/admin', require('../routes/adminRoutes'));
-app.use('/recipes', require('../routes/recipeRoutes'));
+app.use('/', require('../routes/recipeRoutes'));
 app.use('/cooking-hacks', require('../routes/cookingHacks'));
 
 
