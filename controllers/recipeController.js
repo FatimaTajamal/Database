@@ -628,29 +628,27 @@ const generateRecipe = async (req, res) => {
         console.log('Dietary Preferences:', dietaryPreferences);
         console.log('Allergies:', allergies);
 
-        if (!query) {
+        if (!query || query.trim() === '') {
             return res.status(400).json({ error: 'Query is required' });
         }
 
-        // STEP 1: Search in MongoDB
+        // STEP 1: Search in MongoDB (flexible regex)
         console.log('STEP 1: Searching MongoDB...');
-        const normalizedQuery = query.toLowerCase().trim();
+        const normalizedQuery = query.trim().toLowerCase();
         
         const recipe = await Recipe.findOne({ 
             $or: [
-                { title: { $regex: new RegExp(`^${normalizedQuery}$`, 'i') } },
-                { name: { $regex: new RegExp(`^${normalizedQuery}$`, 'i') } }
+                { title: { $regex: normalizedQuery, $options: 'i' } },
+                { name: { $regex: normalizedQuery, $options: 'i' } }
             ]
         });
 
-        // If found in DB, return it
         if (recipe) {
             console.log('✅ FOUND IN DATABASE:', recipe.title || recipe.name);
-            
             return res.json({
                 name: recipe.title || recipe.name,
                 image_url: recipe.image_url || '',
-                ingredients: recipe.ingredients.map(ing => 
+                ingredients: (recipe.ingredients || []).map(ing => 
                     typeof ing === 'string' ? { name: ing, quantity: '' } : ing
                 ),
                 instructions: recipe.instructions || [],
@@ -660,19 +658,16 @@ const generateRecipe = async (req, res) => {
             });
         }
 
-        // STEP 2: Not in DB - Call Gemini
-        console.log('❌ NOT FOUND IN DATABASE');
-        console.log('STEP 2: Calling Gemini API...');
-
+        // STEP 2: Not found in DB → Call Gemini
+        console.log('❌ NOT FOUND IN DATABASE, calling Gemini...');
         const dietaryNote = dietaryPreferences.length > 0
             ? `Make sure the recipe is suitable for someone with these dietary preferences: ${dietaryPreferences.join(', ')}.`
             : '';
-
         const allergyNote = allergies.length > 0
             ? `Avoid these allergens: ${allergies.join(', ')}.`
             : '';
 
-        const prompt = `Give me a traditional recipe for '${query}' in JSON format without markdown or code blocks. 
+        const prompt = `Give me a traditional recipe for '${query}' in valid JSON format without any markdown or code blocks.
 ${dietaryNote} ${allergyNote}
 Structure:
 {
@@ -685,16 +680,28 @@ Structure:
 }
 Return only valid JSON.`;
 
-        const geminiRecipe = await callGeminiAPI(prompt);
-        console.log('✅ Gemini API response received');
+        let geminiRecipe;
+        try {
+            geminiRecipe = await callGeminiAPI(prompt);
+            if (!geminiRecipe || typeof geminiRecipe !== 'object') {
+                throw new Error('Gemini returned invalid recipe');
+            }
+        } catch (geminiError) {
+            console.error('❌ Gemini API error:', geminiError);
+            return res.status(500).json({ error: 'Failed to generate recipe from Gemini' });
+        }
 
-        // Get image
-        const imageUrl = await fetchImageUrl(query);
-        geminiRecipe.image_url = imageUrl;
+        // STEP 3: Fetch image
+        try {
+            geminiRecipe.image_url = await fetchImageUrl(query) || '';
+        } catch (imgError) {
+            console.error('⚠️ Failed to fetch image:', imgError.message);
+            geminiRecipe.image_url = '';
+        }
+
         geminiRecipe.name = geminiRecipe.name || query;
 
-        // STEP 3: Save to MongoDB for future use
-        console.log('STEP 3: Saving to MongoDB...');
+        // STEP 4: Save Gemini recipe to MongoDB
         try {
             const newRecipe = new Recipe({
                 title: geminiRecipe.name,
@@ -708,12 +715,12 @@ Return only valid JSON.`;
             });
 
             await newRecipe.save();
-            console.log('✅ Saved to MongoDB');
+            console.log('✅ Gemini recipe saved to MongoDB');
         } catch (saveError) {
-            console.error('⚠️ MongoDB save error (non-critical):', saveError.message);
+            console.error('⚠️ MongoDB save error (non-critical):', saveError);
         }
 
-        // Return Gemini recipe
+        // STEP 5: Return recipe to client
         res.json({
             ...geminiRecipe,
             source: 'gemini'
@@ -721,12 +728,13 @@ Return only valid JSON.`;
 
     } catch (error) {
         console.error('❌ ERROR in generateRecipe:', error);
-        res.status(500).json({ 
+        res.status(500).json({
             error: error.message,
             stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
     }
 };
+
 
 // 2. GET RECIPES BY INGREDIENTS
 const getRecipesByIngredients = async (req, res) => {
