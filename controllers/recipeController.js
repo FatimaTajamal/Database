@@ -632,11 +632,11 @@ const generateRecipe = async (req, res) => {
             return res.status(400).json({ error: 'Query is required' });
         }
 
-        // STEP 1: Search in MongoDB (flexible regex)
-        console.log('STEP 1: Searching MongoDB...');
         const normalizedQuery = query.trim().toLowerCase();
-        
-        const recipe = await Recipe.findOne({ 
+
+        // STEP 1: Search in MongoDB
+        console.log('STEP 1: Searching MongoDB...');
+        const recipe = await Recipe.findOne({
             $or: [
                 { title: { $regex: normalizedQuery, $options: 'i' } },
                 { name: { $regex: normalizedQuery, $options: 'i' } }
@@ -648,7 +648,7 @@ const generateRecipe = async (req, res) => {
             return res.json({
                 name: recipe.title || recipe.name,
                 image_url: recipe.image_url || '',
-                ingredients: (recipe.ingredients || []).map(ing => 
+                ingredients: (recipe.ingredients || []).map(ing =>
                     typeof ing === 'string' ? { name: ing, quantity: '' } : ing
                 ),
                 instructions: recipe.instructions || [],
@@ -658,12 +658,12 @@ const generateRecipe = async (req, res) => {
             });
         }
 
-        // STEP 2: Not found in DB → Call Gemini
+        // STEP 2: Not in DB → Call Gemini
         console.log('❌ NOT FOUND IN DATABASE, calling Gemini...');
-        const dietaryNote = dietaryPreferences.length > 0
-            ? `Make sure the recipe is suitable for someone with these dietary preferences: ${dietaryPreferences.join(', ')}.`
+        const dietaryNote = dietaryPreferences.length
+            ? `Make sure the recipe is suitable for these dietary preferences: ${dietaryPreferences.join(', ')}.`
             : '';
-        const allergyNote = allergies.length > 0
+        const allergyNote = allergies.length
             ? `Avoid these allergens: ${allergies.join(', ')}.`
             : '';
 
@@ -680,47 +680,52 @@ Structure:
 }
 Return only valid JSON.`;
 
+        // STEP 2a: Call Gemini safely
         let geminiRecipe;
         try {
             geminiRecipe = await callGeminiAPI(prompt);
-            if (!geminiRecipe || typeof geminiRecipe !== 'object') {
-                throw new Error('Gemini returned invalid recipe');
-            }
+
+            // Validate response shape
+            geminiRecipe = {
+                name: geminiRecipe?.name || query,
+                image_url: geminiRecipe?.image_url || '',
+                ingredients: Array.isArray(geminiRecipe?.ingredients) ? geminiRecipe.ingredients : [],
+                instructions: Array.isArray(geminiRecipe?.instructions) ? geminiRecipe.instructions : [],
+                dietaryTags: Array.isArray(geminiRecipe?.dietaryTags) ? geminiRecipe.dietaryTags : dietaryPreferences,
+                allergens: Array.isArray(geminiRecipe?.allergens) ? geminiRecipe.allergens : []
+            };
         } catch (geminiError) {
             console.error('❌ Gemini API error:', geminiError);
             return res.status(500).json({ error: 'Failed to generate recipe from Gemini' });
         }
 
-        // STEP 3: Fetch image
+        // STEP 3: Fetch image (non-critical)
         try {
-            geminiRecipe.image_url = await fetchImageUrl(query) || '';
+            const imageUrl = await fetchImageUrl(query);
+            if (imageUrl) geminiRecipe.image_url = imageUrl;
         } catch (imgError) {
             console.error('⚠️ Failed to fetch image:', imgError.message);
-            geminiRecipe.image_url = '';
         }
 
-        geminiRecipe.name = geminiRecipe.name || query;
-
-        // STEP 4: Save Gemini recipe to MongoDB
+        // STEP 4: Save Gemini recipe to MongoDB (non-critical)
         try {
             const newRecipe = new Recipe({
                 title: geminiRecipe.name,
                 name: geminiRecipe.name,
                 image_url: geminiRecipe.image_url,
-                ingredients: geminiRecipe.ingredients || [],
-                instructions: geminiRecipe.instructions || [],
-                dietaryTags: geminiRecipe.dietaryTags || dietaryPreferences,
-                allergens: geminiRecipe.allergens || [],
+                ingredients: geminiRecipe.ingredients,
+                instructions: geminiRecipe.instructions,
+                dietaryTags: geminiRecipe.dietaryTags,
+                allergens: geminiRecipe.allergens,
                 source: 'gemini'
             });
-
             await newRecipe.save();
             console.log('✅ Gemini recipe saved to MongoDB');
         } catch (saveError) {
-            console.error('⚠️ MongoDB save error (non-critical):', saveError);
+            console.error('⚠️ MongoDB save error (non-critical):', saveError.message);
         }
 
-        // STEP 5: Return recipe to client
+        // STEP 5: Return recipe
         res.json({
             ...geminiRecipe,
             source: 'gemini'
@@ -734,6 +739,7 @@ Return only valid JSON.`;
         });
     }
 };
+
 
 
 // 2. GET RECIPES BY INGREDIENTS
