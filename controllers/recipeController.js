@@ -442,12 +442,16 @@
 const Recipe = require('../models/Recipe');
 const axios = require('axios');
 
+// Validate environment variable on load
+if (!process.env.GEMINI_API_KEY) {
+    console.error('❌ CRITICAL: GEMINI_API_KEY is not set in environment variables!');
+}
+
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-exp:generateContent?key=${GEMINI_API_KEY}`;
 
 // ==================== EXISTING WEB PORTAL ROUTES ====================
 
-// PAGINATED RECIPES (for web portal)
 const getPagedRecipes = async (req, res) => {
     try {
         console.log('=== getPagedRecipes called ===');
@@ -467,6 +471,7 @@ const getPagedRecipes = async (req, res) => {
                 { title: { $regex: regex } },
                 { name: { $regex: regex } },
                 { category: { $regex: regex } },
+                { 'ingredients.name': { $regex: regex } },
                 { ingredients: { $regex: regex } }
             ];
         }
@@ -491,7 +496,6 @@ const getPagedRecipes = async (req, res) => {
     }
 };
 
-// ALL RECIPES (for stats/dashboard)
 const getAllRecipes = async (req, res) => {
     try {
         const recipes = await Recipe.find()
@@ -504,7 +508,6 @@ const getAllRecipes = async (req, res) => {
     }
 };
 
-// GET SINGLE RECIPE BY ID
 const getRecipeById = async (req, res) => {
     try {
         const recipe = await Recipe.findById(req.params.id);
@@ -516,7 +519,6 @@ const getRecipeById = async (req, res) => {
     }
 };
 
-// CREATE NEW RECIPE
 const createRecipe = async (req, res) => {
     try {
         const newRecipe = new Recipe(req.body);
@@ -528,7 +530,6 @@ const createRecipe = async (req, res) => {
     }
 };
 
-// UPDATE LAST VIEWED TIMESTAMP
 const updateLastViewed = async (req, res, next) => {
     try {
         const recipeId = req.params.id;
@@ -540,7 +541,6 @@ const updateLastViewed = async (req, res, next) => {
     }
 };
 
-// UPDATE RECIPE
 const updateRecipe = async (req, res) => {
     try {
         const updated = await Recipe.findByIdAndUpdate(req.params.id, req.body, { new: true });
@@ -552,7 +552,6 @@ const updateRecipe = async (req, res) => {
     }
 };
 
-// DELETE RECIPE
 const deleteRecipe = async (req, res) => {
     try {
         const deleted = await Recipe.findByIdAndDelete(req.params.id);
@@ -566,7 +565,6 @@ const deleteRecipe = async (req, res) => {
 
 // ==================== HELPER FUNCTIONS ====================
 
-// Helper: Fetch image from Pixabay
 async function fetchImageUrl(query) {
     try {
         const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY || "51392156-8eaa4d6a677c8e44156c40208";
@@ -582,57 +580,98 @@ async function fetchImageUrl(query) {
                 image_type: 'photo',
                 category: 'food',
                 safesearch: true
-            }
+            },
+            timeout: 5000
         });
 
         if (response.data.hits && response.data.hits.length > 0) {
             return response.data.hits[0].webformatURL;
         }
     } catch (error) {
-        console.error('Error fetching image:', error.message);
+        console.error('⚠️ Pixabay API Error (non-critical):', error.message);
     }
     return '';
 }
 
-// Helper: Call Gemini API
 async function callGeminiAPI(prompt) {
     try {
-        const response = await axios.post(GEMINI_URL, {
-            contents: [{
-                role: "user",
-                parts: [{ text: prompt }]
-            }]
-        }, {
-            headers: { "Content-Type": "application/json" }
-        });
+        // Check if API key exists
+        if (!GEMINI_API_KEY) {
+            throw new Error('GEMINI_API_KEY is not configured');
+        }
+
+        console.log('🔹 Calling Gemini API...');
+        console.log('🔹 Prompt length:', prompt.length);
+
+        const response = await axios.post(
+            GEMINI_URL,
+            {
+                contents: [{
+                    role: "user",
+                    parts: [{ text: prompt }]
+                }]
+            },
+            {
+                headers: { "Content-Type": "application/json" },
+                timeout: 30000 // 30 second timeout
+            }
+        );
+
+        console.log('✅ Gemini API responded successfully');
+
+        // Extract content
+        if (!response.data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+            throw new Error('Invalid response structure from Gemini API');
+        }
 
         let content = response.data.candidates[0].content.parts[0].text;
+        
+        // Clean markdown formatting
         content = content.replace(/```json/g, '').replace(/```/g, '').trim();
-        return JSON.parse(content);
+        
+        console.log('🔹 Cleaned response:', content.substring(0, 200) + '...');
+
+        // Parse JSON
+        const parsed = JSON.parse(content);
+        console.log('✅ Successfully parsed JSON response');
+        
+        return parsed;
+
     } catch (error) {
-        console.error('Gemini API Error:', error.response ? error.response.data : error.message);
-        throw new Error('Failed to generate recipe from Gemini');
+        console.error('❌ Gemini API Error Details:');
+        console.error('- Message:', error.message);
+        
+        if (error.response) {
+            console.error('- Status:', error.response.status);
+            console.error('- Data:', JSON.stringify(error.response.data, null, 2));
+        }
+        
+        if (error.code === 'ECONNABORTED') {
+            throw new Error('Gemini API request timed out');
+        }
+        
+        throw new Error(`Gemini API failed: ${error.message}`);
     }
 }
 
-// ==================== NEW FLUTTER APP ROUTES (with Gemini) ====================
+// ==================== FLUTTER APP ROUTES ====================
 
-// 1. GENERATE SINGLE RECIPE (DB → Gemini fallback)
 const generateRecipe = async (req, res) => {
     try {
         const { query, dietaryPreferences = [], allergies = [] } = req.body;
 
         console.log('=== generateRecipe called ===');
-        console.log('Query:', query);
-        console.log('Dietary Preferences:', dietaryPreferences);
-        console.log('Allergies:', allergies);
+        console.log('📝 Query:', query);
+        console.log('🥗 Dietary Preferences:', dietaryPreferences);
+        console.log('⚠️ Allergies:', allergies);
 
-        if (!query) {
-            return res.status(400).json({ error: 'Query is required' });
+        // Validate input
+        if (!query || query.trim() === '') {
+            return res.status(400).json({ error: 'Query is required and cannot be empty' });
         }
 
-        // STEP 1: Search in MongoDB
-        console.log('STEP 1: Searching MongoDB...');
+        // STEP 1: Search MongoDB
+        console.log('STEP 1: 🔍 Searching MongoDB...');
         const normalizedQuery = query.toLowerCase().trim();
         
         const recipe = await Recipe.findOne({ 
@@ -642,7 +681,6 @@ const generateRecipe = async (req, res) => {
             ]
         });
 
-        // If found in DB, return it
         if (recipe) {
             console.log('✅ FOUND IN DATABASE:', recipe.title || recipe.name);
             
@@ -659,41 +697,50 @@ const generateRecipe = async (req, res) => {
             });
         }
 
-        // STEP 2: Not in DB - Call Gemini
         console.log('❌ NOT FOUND IN DATABASE');
-        console.log('STEP 2: Calling Gemini API...');
+
+        // STEP 2: Call Gemini API
+        console.log('STEP 2: 🤖 Calling Gemini API...');
+
+        // Check if Gemini is available
+        if (!GEMINI_API_KEY) {
+            return res.status(503).json({ 
+                error: 'Recipe generation service is not configured. Please contact support.' 
+            });
+        }
 
         const dietaryNote = dietaryPreferences.length > 0
-            ? `Make sure the recipe is suitable for someone with these dietary preferences: ${dietaryPreferences.join(', ')}.`
+            ? `This recipe must be suitable for: ${dietaryPreferences.join(', ')}.`
             : '';
 
         const allergyNote = allergies.length > 0
-            ? `Avoid these allergens: ${allergies.join(', ')}.`
+            ? `IMPORTANT: This recipe MUST NOT contain: ${allergies.join(', ')}.`
             : '';
 
-        const prompt = `Give me a traditional recipe for '${query}' in JSON format without markdown or code blocks. 
-${dietaryNote} ${allergyNote}
-Structure:
+        const prompt = `Create a detailed recipe for "${query}". ${dietaryNote} ${allergyNote}
+
+Return ONLY valid JSON in this exact format (no markdown, no code blocks):
 {
   "name": "Recipe Name",
   "image_url": "",
-  "ingredients": [{"name": "ingredient", "quantity": "amount"}],
-  "instructions": ["Step 1", "Step 2"],
-  "dietaryTags": ["vegetarian"],
-  "allergens": ["nuts"]
-}
-Return only valid JSON.`;
+  "ingredients": [
+    {"name": "ingredient name", "quantity": "amount with unit"}
+  ],
+  "instructions": ["Step 1 with details", "Step 2 with details"],
+  "dietaryTags": ["vegetarian", "gluten-free"],
+  "allergens": ["nuts", "dairy"]
+}`;
 
         const geminiRecipe = await callGeminiAPI(prompt);
-        console.log('✅ Gemini API response received');
 
-        // Get image
+        // STEP 3: Fetch image
+        console.log('STEP 3: 🖼️ Fetching image...');
         const imageUrl = await fetchImageUrl(query);
         geminiRecipe.image_url = imageUrl;
         geminiRecipe.name = geminiRecipe.name || query;
 
-        // STEP 3: Save to MongoDB for future use
-        console.log('STEP 3: Saving to MongoDB...');
+        // STEP 4: Save to MongoDB
+        console.log('STEP 4: 💾 Saving to MongoDB...');
         try {
             const newRecipe = new Recipe({
                 title: geminiRecipe.name,
@@ -707,56 +754,78 @@ Return only valid JSON.`;
             });
 
             await newRecipe.save();
-            console.log('✅ Saved to MongoDB');
+            console.log('✅ Successfully saved to MongoDB');
         } catch (saveError) {
             console.error('⚠️ MongoDB save error (non-critical):', saveError.message);
         }
 
-        // Return Gemini recipe
+        // Return recipe
+        console.log('✅ Returning generated recipe');
         res.json({
             ...geminiRecipe,
             source: 'gemini'
         });
 
     } catch (error) {
-        console.error('❌ ERROR in generateRecipe:', error);
-        res.status(500).json({ 
-            error: error.message,
-            stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+        console.error('❌ ERROR in generateRecipe:');
+        console.error('- Error type:', error.constructor.name);
+        console.error('- Error message:', error.message);
+        console.error('- Stack trace:', error.stack);
+        
+        // Send appropriate error response
+        const statusCode = error.message.includes('not configured') ? 503 : 500;
+        res.status(statusCode).json({ 
+            error: error.message || 'An unexpected error occurred',
+            details: process.env.NODE_ENV === 'development' ? error.stack : undefined
         });
     }
 };
 
-// 2. GET RECIPES BY INGREDIENTS
 const getRecipesByIngredients = async (req, res) => {
     try {
         const { ingredients = [], dietaryPreferences = [], allergies = [] } = req.body;
 
+        console.log('=== getRecipesByIngredients called ===');
+        console.log('Ingredients:', ingredients);
+
         if (!ingredients || ingredients.length === 0) {
-            return res.status(400).json({ error: 'Ingredients are required' });
+            return res.status(400).json({ error: 'At least one ingredient is required' });
         }
 
-        // Check MongoDB first
+        // Search MongoDB
+        const ingredientRegexes = ingredients.map(i => new RegExp(i, 'i'));
         const dbRecipes = await Recipe.find({
-            'ingredients.name': { $all: ingredients.map(i => new RegExp(i, 'i')) }
+            $or: [
+                { 'ingredients.name': { $in: ingredientRegexes } },
+                { ingredients: { $in: ingredientRegexes } }
+            ]
         }).limit(5);
 
         if (dbRecipes.length >= 3) {
-            console.log('✅ Found recipes in MongoDB by ingredients');
+            console.log('✅ Found sufficient recipes in MongoDB');
             return res.json(dbRecipes.map(r => ({
                 name: r.title || r.name,
                 image_url: r.image_url || '',
                 ingredients: r.ingredients,
-                instructions: r.instructions
+                instructions: r.instructions,
+                dietaryTags: r.dietaryTags || [],
+                allergens: r.allergens || []
             })));
         }
 
         // Call Gemini
-        const dietaryPart = dietaryPreferences.length > 0 ? `suitable for ${dietaryPreferences.join(', ')} diet` : '';
-        const allergyPart = allergies.length > 0 ? `excluding ${allergies.join(', ')}` : '';
+        console.log('🤖 Calling Gemini for recipe suggestions...');
+        
+        const dietaryPart = dietaryPreferences.length > 0 
+            ? `suitable for ${dietaryPreferences.join(', ')} diet` 
+            : '';
+        const allergyPart = allergies.length > 0 
+            ? `avoiding ${allergies.join(', ')}` 
+            : '';
 
-        const prompt = `Suggest 5 traditional recipes using only these ingredients: ${ingredients.join(', ')} ${dietaryPart} ${allergyPart}. 
-Return a JSON array without markdown:
+        const prompt = `Suggest 5 recipes using these ingredients: ${ingredients.join(', ')}. ${dietaryPart} ${allergyPart}
+
+Return ONLY a JSON array (no markdown):
 [{
   "name": "Recipe Name",
   "image_url": "",
@@ -768,22 +837,27 @@ Return a JSON array without markdown:
 
         const geminiRecipes = await callGeminiAPI(prompt);
 
+        // Add images and save
         const recipesWithImages = await Promise.all(
             geminiRecipes.map(async (recipe) => {
                 recipe.image_url = await fetchImageUrl(recipe.name);
                 
-                const newRecipe = new Recipe({
-                    title: recipe.name,
-                    name: recipe.name,
-                    image_url: recipe.image_url,
-                    ingredients: recipe.ingredients || [],
-                    instructions: recipe.instructions || [],
-                    dietaryTags: recipe.dietaryTags || [],
-                    allergens: recipe.allergens || [],
-                    source: 'gemini'
-                });
-
-                await newRecipe.save();
+                try {
+                    const newRecipe = new Recipe({
+                        title: recipe.name,
+                        name: recipe.name,
+                        image_url: recipe.image_url,
+                        ingredients: recipe.ingredients || [],
+                        instructions: recipe.instructions || [],
+                        dietaryTags: recipe.dietaryTags || [],
+                        allergens: recipe.allergens || [],
+                        source: 'gemini'
+                    });
+                    await newRecipe.save();
+                } catch (err) {
+                    console.error('⚠️ Error saving recipe:', err.message);
+                }
+                
                 return recipe;
             })
         );
@@ -795,7 +869,6 @@ Return a JSON array without markdown:
     }
 };
 
-// 3. GET RECIPE SUGGESTIONS (for voice search)
 const getRecipeSuggestions = async (req, res) => {
     try {
         const { query, dietaryPreferences = [] } = req.body;
@@ -805,11 +878,11 @@ const getRecipeSuggestions = async (req, res) => {
         }
 
         const dietaryPart = dietaryPreferences.length > 0
-            ? `suitable for someone with: ${dietaryPreferences.join(', ')}`
+            ? `suitable for ${dietaryPreferences.join(', ')}`
             : '';
 
-        const prompt = `The user said '${query}'. Suggest 4 specific, popular recipes containing '${query}' ${dietaryPart}. 
-Return ONLY a JSON array: ["Recipe 1", "Recipe 2", "Recipe 3", "Recipe 4"]`;
+        const prompt = `Suggest 4 popular recipes related to "${query}" ${dietaryPart}. 
+Return ONLY a JSON array of recipe names: ["Recipe 1", "Recipe 2", "Recipe 3", "Recipe 4"]`;
 
         const suggestions = await callGeminiAPI(prompt);
         res.json(suggestions);
@@ -819,7 +892,6 @@ Return ONLY a JSON array: ["Recipe 1", "Recipe 2", "Recipe 3", "Recipe 4"]`;
     }
 };
 
-// 4. GET SUGGESTIONS BY CATEGORY
 const getSuggestionsByCategory = async (req, res) => {
     try {
         const { category, dietaryPreferences = [] } = req.body;
@@ -829,14 +901,16 @@ const getSuggestionsByCategory = async (req, res) => {
         }
 
         const now = new Date();
-        const timeOfDay = now.getHours() < 12 ? 'morning' : (now.getHours() < 18 ? 'afternoon' : 'evening');
+        const hour = now.getHours();
+        const timeOfDay = hour < 12 ? 'morning' : (hour < 18 ? 'afternoon' : 'evening');
         const seed = now.getMilliseconds();
 
         const dietaryPart = dietaryPreferences.length > 0
             ? `suitable for ${dietaryPreferences.join(', ')}`
             : '';
 
-        const prompt = `Suggest 10 unique ${category} recipes ${dietaryPart} ideal for ${timeOfDay}. Variety seed: ${seed}. Return JSON array: ["Recipe 1", "Recipe 2"]`;
+        const prompt = `Suggest 10 unique ${category} recipes ${dietaryPart} ideal for ${timeOfDay}. Seed: ${seed}. 
+Return ONLY a JSON array: ["Recipe 1", "Recipe 2", ...]`;
 
         const suggestions = await callGeminiAPI(prompt);
         res.json(suggestions);
@@ -846,7 +920,6 @@ const getSuggestionsByCategory = async (req, res) => {
     }
 };
 
-// 5. GET MULTIPLE RECIPES
 const getMultipleRecipes = async (req, res) => {
     try {
         const { recipeNames = [] } = req.body;
@@ -858,17 +931,20 @@ const getMultipleRecipes = async (req, res) => {
         const recipes = await Promise.all(
             recipeNames.map(async (name) => {
                 let recipe = await Recipe.findOne({ 
-                    title: { $regex: new RegExp(`^${name}$`, 'i') }
+                    $or: [
+                        { title: { $regex: new RegExp(`^${name}$`, 'i') } },
+                        { name: { $regex: new RegExp(`^${name}$`, 'i') } }
+                    ]
                 });
 
                 if (!recipe) {
-                    const prompt = `Give me a recipe for '${name}' in JSON format.`;
+                    const prompt = `Create a recipe for "${name}". Return valid JSON only.`;
                     const geminiRecipe = await callGeminiAPI(prompt);
                     geminiRecipe.image_url = await fetchImageUrl(name);
                     
                     recipe = new Recipe({
-                        title: geminiRecipe.name,
-                        name: geminiRecipe.name,
+                        title: geminiRecipe.name || name,
+                        name: geminiRecipe.name || name,
                         image_url: geminiRecipe.image_url,
                         ingredients: geminiRecipe.ingredients || [],
                         instructions: geminiRecipe.instructions || [],
@@ -890,7 +966,6 @@ const getMultipleRecipes = async (req, res) => {
 
 // ==================== EXPORTS ====================
 module.exports = {
-    // Web portal routes
     getPagedRecipes,
     getAllRecipes,
     getRecipeById,
@@ -898,8 +973,6 @@ module.exports = {
     updateRecipe,
     deleteRecipe,
     updateLastViewed,
-    
-    // Flutter app routes (with Gemini)
     generateRecipe,
     getRecipesByIngredients,
     getRecipeSuggestions,
