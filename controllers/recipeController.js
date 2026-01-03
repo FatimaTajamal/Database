@@ -498,7 +498,18 @@ const getAllRecipes = async (req, res) => {
         const recipes = await Recipe.find()
             .sort({ lastViewed: -1, createdAt: -1 })
             .limit(20);
-        res.json(recipes);
+        res.json(
+  recipes.map(r => ({
+    name: r.title || r.name,
+    image_url: r.image_url || '',
+    ingredients: r.ingredients || [],
+    instructions: r.instructions || [],
+    dietaryTags: r.dietaryTags || [],
+    allergens: r.allergens || [],
+    category: r.category || '',
+  }))
+);
+
     } catch (error) {
         console.error('Error fetching all recipes:', error);
         res.status(500).json({ message: 'Error fetching recipes', error: error.message });
@@ -822,30 +833,54 @@ Return ONLY a JSON array: ["Recipe 1", "Recipe 2", "Recipe 3", "Recipe 4"]`;
 
 // 4. GET SUGGESTIONS BY CATEGORY
 const getSuggestionsByCategory = async (req, res) => {
-    try {
-        const { category, dietaryPreferences = [] } = req.body;
+  try {
+    const { category, dietaryPreferences = [] } = req.body;
 
-        if (!category) {
-            return res.status(400).json({ error: 'Category is required' });
-        }
-
-        const now = new Date();
-        const timeOfDay = now.getHours() < 12 ? 'morning' : (now.getHours() < 18 ? 'afternoon' : 'evening');
-        const seed = now.getMilliseconds();
-
-        const dietaryPart = dietaryPreferences.length > 0
-            ? `suitable for ${dietaryPreferences.join(', ')}`
-            : '';
-
-        const prompt = `Suggest 10 unique ${category} recipes ${dietaryPart} ideal for ${timeOfDay}. Variety seed: ${seed}. Return JSON array: ["Recipe 1", "Recipe 2"]`;
-
-        const suggestions = await callGeminiAPI(prompt);
-        res.json(suggestions);
-    } catch (error) {
-        console.error('Error in getSuggestionsByCategory:', error);
-        res.status(500).json({ error: error.message });
+    if (!category) {
+      return res.status(400).json({ error: 'Category is required' });
     }
+
+    const now = new Date();
+    const timeOfDay =
+      now.getHours() < 12
+        ? 'morning'
+        : now.getHours() < 18
+        ? 'afternoon'
+        : 'evening';
+
+    const seed = now.getMilliseconds();
+
+    const dietaryPart =
+      dietaryPreferences.length > 0
+        ? `suitable for ${dietaryPreferences.join(', ')}`
+        : '';
+
+    const prompt = `Suggest 10 unique ${category} recipes ${dietaryPart} ideal for ${timeOfDay}. Variety seed: ${seed}. Return JSON array: ["Recipe 1", "Recipe 2"]`;
+
+    const suggestions = await callGeminiAPI(prompt);
+
+    // ✅ NEW: persist category for each recipe name
+    if (Array.isArray(suggestions)) {
+      await Promise.all(
+        suggestions.map(async (name) => {
+          if (!name) return;
+
+          await Recipe.updateOne(
+            { name },                    // match by recipe name
+            { $set: { category } },      // save category
+            { upsert: true }             // create if missing
+          );
+        })
+      );
+    }
+
+    res.json(suggestions);
+  } catch (error) {
+    console.error('Error in getSuggestionsByCategory:', error);
+    res.status(500).json({ error: 'Failed to fetch category suggestions' });
+  }
 };
+
 
 // 5. GET MULTIPLE RECIPES
 const getMultipleRecipes = async (req, res) => {
