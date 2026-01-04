@@ -564,7 +564,7 @@ const getSuggestionsByCategory = async (req, res) => {
             category: new RegExp(category, 'i')
         };
 
-        // Add dietary preferences filter if provided
+        // ✅ ONLY add dietary filter if preferences are selected
         if (dietaryPreferences.length > 0) {
             query.dietaryTags = { $in: dietaryPreferences };
         }
@@ -627,26 +627,26 @@ const getSuggestionsByCategory = async (req, res) => {
                 const timeOfDay = hour < 12 ? 'morning' : (hour < 18 ? 'afternoon' : 'evening');
                 const seed = now.getMilliseconds();
 
+                // ✅ Generate diverse recipes - only filter if preferences exist
                 const dietaryPart = dietaryPreferences.length > 0
                     ? `that are ${dietaryPreferences.join(' and ')}`
                     : '';
 
-                // ✅ FIX 1: Generate only 5 recipe names (not 10)
                 const namesPrompt = `Suggest 5 unique ${category} recipes ${dietaryPart} ideal for ${timeOfDay}. Variety seed: ${seed}. Return ONLY a JSON array: ["Recipe 1", "Recipe 2", "Recipe 3", "Recipe 4", "Recipe 5"]`;
                 
                 console.log('🔹 Fetching recipe names from Gemini...');
                 const recipeNames = await callGeminiAPI(namesPrompt);
                 console.log(`✅ Got ${recipeNames.length} recipe names`);
 
-                // ✅ FIX 2: Generate recipes in smaller batches to avoid timeout
-                const batchSize = 3; // Process 3 recipes at a time
+                // Generate recipes in smaller batches
+                const batchSize = 3;
                 const allRecipes = [];
 
                 for (let i = 0; i < recipeNames.length; i += batchSize) {
                     const batch = recipeNames.slice(i, i + batchSize);
                     
                     const batchPrompt = `Create detailed recipes for these dishes. Analyze ingredients and identify:
-- dietaryTags: dietary categories (vegetarian, vegan, gluten-free, dairy-free, nut-free, keto, paleo, low-carb, halal, kosher)
+- dietaryTags: dietary categories (vegetarian, vegan, gluten-free, dairy-free, keto, paleo, low-carb, halal, kosher)
 - allergens: common allergens present (dairy, eggs, fish, shellfish, tree nuts, peanuts, wheat, soybeans, sesame)
 
 Use lowercase, hyphenated format. Return ONLY valid JSON array:
@@ -655,8 +655,8 @@ Use lowercase, hyphenated format. Return ONLY valid JSON array:
     "name": "Recipe Name",
     "ingredients": [{"name": "ingredient", "quantity": "amount"}],
     "instructions": ["Step 1", "Step 2"],
-    "dietaryTags": ["vegetarian"],
-    "allergens": ["wheat"]
+    "dietaryTags": ["vegetarian", "vegan"],
+    "allergens": ["tree nuts", "wheat"]
   }
 ]
 
@@ -670,7 +670,7 @@ ${batch.map((name, idx) => `${idx + 1}. ${name}`).join('\n')}`;
                     
                     console.log(`✅ Got ${batchRecipes.length} recipes from batch`);
                     
-                    // Small delay between batches to respect rate limits
+                    // Small delay between batches
                     if (i + batchSize < recipeNames.length) {
                         await new Promise(resolve => setTimeout(resolve, 1000));
                     }
@@ -685,7 +685,7 @@ ${batch.map((name, idx) => `${idx + 1}. ${name}`).join('\n')}`;
                             // Fetch image
                             recipe.image_url = await fetchImageUrl(recipe.name);
                             
-                            // Light cleanup
+                            // Clean and validate data
                             const cleanedRecipe = {
                                 title: recipe.name,
                                 name: recipe.name,
@@ -694,7 +694,7 @@ ${batch.map((name, idx) => `${idx + 1}. ${name}`).join('\n')}`;
                                 instructions: Array.isArray(recipe.instructions) ? recipe.instructions : [],
                                 dietaryTags: sanitizeArray(recipe.dietaryTags, [
                                     'vegetarian', 'vegan', 'gluten-free', 'dairy-free', 
-                                    'nut-free', 'keto', 'paleo', 'low-carb', 'halal', 'kosher'
+                                    'keto', 'paleo', 'low-carb', 'halal', 'kosher'
                                 ]),
                                 allergens: sanitizeArray(recipe.allergens, [
                                     'dairy', 'eggs', 'fish', 'shellfish', 'tree nuts', 
@@ -728,13 +728,17 @@ ${batch.map((name, idx) => `${idx + 1}. ${name}`).join('\n')}`;
 
                 console.log('✅ Returning generated recipes to client');
                 
-                // Filter results based on user preferences
+                // ✅ CORRECTED: Only filter if user has preferences
                 let filteredRecipes = recipesWithImages;
                 if (dietaryPreferences.length > 0) {
                     filteredRecipes = recipesWithImages.filter(recipe => {
                         const recipeTags = recipe.dietaryTags || [];
+                        // Recipe must match ALL user preferences
                         return dietaryPreferences.every(pref => recipeTags.includes(pref));
                     });
+                    console.log(`✅ Filtered to ${filteredRecipes.length} recipes matching preferences`);
+                } else {
+                    console.log('✅ No dietary preferences - showing all recipes');
                 }
                 
                 return res.json({
