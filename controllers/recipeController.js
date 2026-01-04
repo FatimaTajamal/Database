@@ -472,6 +472,35 @@ const getSuggestionsByCategory = async (req, res) => {
         const { category, dietaryPreferences = [] } = req.body;
         if (!category) return res.status(400).json({ error: 'Category is required' });
 
+        console.log(`📋 Fetching ${category} recipes...`);
+
+        // STEP 1: Search MongoDB first for existing recipes in this category
+        const dietaryQuery = dietaryPreferences.length > 0 
+            ? { dietaryTags: { $in: dietaryPreferences } }
+            : {};
+
+        const dbRecipes = await Recipe.find({
+            category: new RegExp(category, 'i'),
+            ...dietaryQuery
+        })
+        .limit(10)
+        .select('title name image_url ingredients instructions dietaryTags allergens');
+
+        console.log(`✅ Found ${dbRecipes.length} recipes in database`);
+
+        // If we have enough recipes in the database, return them
+        if (dbRecipes.length >= 6) {
+            return res.json(dbRecipes.map(recipe => ({
+                name: recipe.title || recipe.name,
+                image_url: recipe.image_url || '',
+                ingredients: recipe.ingredients || [],
+                instructions: recipe.instructions || [],
+                dietaryTags: recipe.dietaryTags || [],
+                allergens: recipe.allergens || []
+            })));
+        }
+
+        // STEP 2: If not enough in DB, get ONE batch of recipe names from Gemini
         const now = new Date();
         const hour = now.getHours();
         const timeOfDay = hour < 12 ? 'morning' : (hour < 18 ? 'afternoon' : 'evening');
@@ -481,55 +510,100 @@ const getSuggestionsByCategory = async (req, res) => {
             ? `suitable for ${dietaryPreferences.join(', ')}`
             : '';
 
-        // Get recipe names first
-        const prompt = `Suggest 10 unique ${category} recipes ${dietaryPart} ideal for ${timeOfDay}. Variety seed: ${seed}. Return JSON array: ["Recipe 1", "Recipe 2", ...]`;
-        const suggestions = await callGeminiAPI(prompt);
+        // Get just recipe names (1 API call)
+        const namesPrompt = `Suggest 10 unique ${category} recipes ${dietaryPart} ideal for ${timeOfDay}. Variety seed: ${seed}. Return ONLY a JSON array: ["Recipe 1", "Recipe 2", ...]`;
+        const recipeNames = await callGeminiAPI(namesPrompt);
         
-        // ✅ NEW: Fetch full recipe details for each suggestion
-        const fullRecipes = await Promise.all(
-            suggestions.slice(0, 6).map(async (name) => {
-                // Check database first
-                let recipe = await Recipe.findOne({ 
-                    $or: [
-                        { title: { $regex: new RegExp(name, 'i') } },
-                        { name: { $regex: new RegExp(name, 'i') } }
-                    ]
-                });
+        console.log(`✅ Got ${recipeNames.length} recipe names from Gemini`);
 
-                if (!recipe) {
-                    // Generate with Gemini if not found
-                    const recipePrompt = `Create a recipe for "${name}" in JSON format without markdown.`;
-                    const geminiRecipe = await callGeminiAPI(recipePrompt);
-                    geminiRecipe.image_url = await fetchImageUrl(name);
+        // STEP 3: Get FULL details for ALL recipes in ONE API call
+        const batchPrompt = `Create detailed recipes for the following ${recipeNames.length} dishes. Return ONLY valid JSON array without markdown:
+[
+  {
+    "name": "Recipe Name",
+    "ingredients": [{"name": "ingredient", "quantity": "amount"}],
+    "instructions": ["Step 1", "Step 2"],
+    "dietaryTags": ["vegetarian"],
+    "allergens": ["nuts"]
+  }
+]
+
+Recipes to create:
+${recipeNames.map((name, i) => `${i + 1}. ${name}`).join('\n')}`;
+
+        console.log('🔹 Fetching batch recipe details...');
+        const batchRecipes = await callGeminiAPI(batchPrompt);
+        
+        console.log(`✅ Got ${batchRecipes.length} full recipes`);
+
+        // STEP 4: Fetch images and save to database (without blocking response)
+        const recipesWithImages = await Promise.all(
+            batchRecipes.slice(0, 10).map(async (recipe) => {
+                try {
+                    // Fetch image
+                    recipe.image_url = await fetchImageUrl(recipe.name);
                     
-                    recipe = new Recipe({
-                        title: geminiRecipe.name || name,
-                        name: geminiRecipe.name || name,
-                        image_url: geminiRecipe.image_url,
-                        ingredients: geminiRecipe.ingredients || [],
-                        instructions: geminiRecipe.instructions || [],
-                        dietaryTags: geminiRecipe.dietaryTags || [],
-                        allergens: geminiRecipe.allergens || [],
-                        source: 'gemini',
-                        category: category
+                    // Save to database (don't await - let it happen in background)
+                    const newRecipe = new Recipe({
+                        title: recipe.name,
+                        name: recipe.name,
+                        image_url: recipe.image_url,
+                        ingredients: recipe.ingredients || [],
+                        instructions: recipe.instructions || [],
+                        dietaryTags: recipe.dietaryTags || dietaryPreferences,
+                        allergens: recipe.allergens || [],
+                        category: category,
+                        source: 'gemini'
                     });
-                    await recipe.save();
+                    
+                    newRecipe.save().catch(err => 
+                        console.error('⚠️ Background save error:', err.message)
+                    );
+                    
+                } catch (err) {
+                    console.error('⚠️ Image fetch error:', err.message);
+                    recipe.image_url = '';
                 }
                 
                 return {
-                    name: recipe.title || recipe.name,
-                    image_url: recipe.image_url || '',
-                    ingredients: recipe.ingredients,
-                    instructions: recipe.instructions,
+                    name: recipe.name,
+                    image_url: recipe.image_url,
+                    ingredients: recipe.ingredients || [],
+                    instructions: recipe.instructions || [],
                     dietaryTags: recipe.dietaryTags || [],
                     allergens: recipe.allergens || []
                 };
             })
         );
-        
-        res.json(fullRecipes);
+
+        console.log('✅ Returning recipes to client');
+        res.json(recipesWithImages.slice(0, 6));
+
     } catch (error) {
-        console.error('Error in getSuggestionsByCategory:', error);
+        console.error('❌ Error in getSuggestionsByCategory:', error.message);
+        
+        // If rate limited, return cached/database recipes
+        if (error.message.includes('429') || error.message.includes('quota')) {
+            console.log('⚠️ Rate limited, returning database recipes only');
+            
+            const fallbackRecipes = await Recipe.find({
+                category: new RegExp(category, 'i')
+            })
+            .limit(6)
+            .select('title name image_url ingredients instructions dietaryTags allergens');
+            
+            if (fallbackRecipes.length > 0) {
+                return res.json(fallbackRecipes.map(recipe => ({
+                    name: recipe.title || recipe.name,
+                    image_url: recipe.image_url || '',
+                    ingredients: recipe.ingredients || [],
+                    instructions: recipe.instructions || [],
+                    dietaryTags: recipe.dietaryTags || [],
+                    allergens: recipe.allergens || []
+                })));
+            }
+        }
+        
         res.status(500).json({ error: error.message });
     }
 };
