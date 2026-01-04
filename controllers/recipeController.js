@@ -566,7 +566,6 @@ const getSuggestionsByCategory = async (req, res) => {
             category: new RegExp(category, 'i')
         };
 
-        // ✅ Apply dietary filter ONLY if selected
         if (dietaryPreferences.length > 0) {
             query.dietaryTags = { $in: dietaryPreferences };
         }
@@ -637,10 +636,21 @@ const getSuggestionsByCategory = async (req, res) => {
 Return ONLY a JSON array:
 ["Recipe 1", "Recipe 2", "Recipe 3", "Recipe 4", "Recipe 5"]`;
 
-        const recipeNames = await callGeminiAPI(namesPrompt);
+        let recipeNames = await callGeminiAPI(namesPrompt);
+
+        // Ensure it's an array
+        if (!Array.isArray(recipeNames)) recipeNames = [];
+
+        // Convert any string-only items into objects
+        recipeNames = recipeNames.map(item => {
+            if (typeof item === 'string') {
+                return { name: item, ingredients: [], instructions: [], dietaryTags: [] };
+            }
+            return item;
+        });
 
         // =========================
-        // STEP 2: GET DETAILS (NO ALLERGENS)
+        // STEP 2: GET DETAILS
         // =========================
         const batchPrompt = `Create detailed recipes for the following dishes.
 Analyze ingredients and identify dietaryTags only.
@@ -660,9 +670,19 @@ Return ONLY valid JSON array:
 ]
 
 Recipes:
-${recipeNames.map((name, i) => `${i + 1}. ${name}`).join('\n')}`;
+${recipeNames.map((r, i) => `${i + 1}. ${r.name}`).join('\n')}`;
 
-        const generatedRecipes = await callGeminiAPI(batchPrompt);
+        let generatedRecipes = await callGeminiAPI(batchPrompt);
+
+        if (!Array.isArray(generatedRecipes)) generatedRecipes = [];
+
+        // Convert any string-only items into objects
+        generatedRecipes = generatedRecipes.map(item => {
+            if (typeof item === 'string') {
+                return { name: item, ingredients: [], instructions: [], dietaryTags: [] };
+            }
+            return item;
+        });
 
         // =========================
         // SAVE & FORMAT
@@ -690,7 +710,6 @@ ${recipeNames.map((name, i) => `${i + 1}. ${name}`).join('\n')}`;
                     source: 'gemini'
                 };
 
-                // Save in background
                 new Recipe(cleanedRecipe).save().catch(() => {});
 
                 return {
@@ -704,7 +723,7 @@ ${recipeNames.map((name, i) => `${i + 1}. ${name}`).join('\n')}`;
         );
 
         // =========================
-        // FINAL FILTER (ONLY IF PREFS)
+        // FINAL FILTER
         // =========================
         const filtered =
             dietaryPreferences.length > 0
