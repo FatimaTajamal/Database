@@ -481,9 +481,53 @@ const getSuggestionsByCategory = async (req, res) => {
             ? `suitable for ${dietaryPreferences.join(', ')}`
             : '';
 
+        // Get recipe names first
         const prompt = `Suggest 10 unique ${category} recipes ${dietaryPart} ideal for ${timeOfDay}. Variety seed: ${seed}. Return JSON array: ["Recipe 1", "Recipe 2", ...]`;
         const suggestions = await callGeminiAPI(prompt);
-        res.json(suggestions);
+        
+        // ✅ NEW: Fetch full recipe details for each suggestion
+        const fullRecipes = await Promise.all(
+            suggestions.slice(0, 6).map(async (name) => {
+                // Check database first
+                let recipe = await Recipe.findOne({ 
+                    $or: [
+                        { title: { $regex: new RegExp(name, 'i') } },
+                        { name: { $regex: new RegExp(name, 'i') } }
+                    ]
+                });
+
+                if (!recipe) {
+                    // Generate with Gemini if not found
+                    const recipePrompt = `Create a recipe for "${name}" in JSON format without markdown.`;
+                    const geminiRecipe = await callGeminiAPI(recipePrompt);
+                    geminiRecipe.image_url = await fetchImageUrl(name);
+                    
+                    recipe = new Recipe({
+                        title: geminiRecipe.name || name,
+                        name: geminiRecipe.name || name,
+                        image_url: geminiRecipe.image_url,
+                        ingredients: geminiRecipe.ingredients || [],
+                        instructions: geminiRecipe.instructions || [],
+                        dietaryTags: geminiRecipe.dietaryTags || [],
+                        allergens: geminiRecipe.allergens || [],
+                        source: 'gemini',
+                        category: category
+                    });
+                    await recipe.save();
+                }
+                
+                return {
+                    name: recipe.title || recipe.name,
+                    image_url: recipe.image_url || '',
+                    ingredients: recipe.ingredients,
+                    instructions: recipe.instructions,
+                    dietaryTags: recipe.dietaryTags || [],
+                    allergens: recipe.allergens || []
+                };
+            })
+        );
+        
+        res.json(fullRecipes);
     } catch (error) {
         console.error('Error in getSuggestionsByCategory:', error);
         res.status(500).json({ error: error.message });
