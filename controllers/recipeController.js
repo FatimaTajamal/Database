@@ -548,117 +548,76 @@ const getRecipeSuggestions = async (req, res) => {
 };
 
 const getSuggestionsByCategory = async (req, res) => {
-    try {
-        const { category, dietaryPreferences = [], page = 1, limit = 3 } = req.body;
+  try {
+    const { category, dietaryPreferences = [], page = 1, limit = 3 } = req.body;
 
-        if (!category) {
-            return res.status(400).json({ error: 'Category is required' });
-        }
+    if (!category) {
+      return res.status(400).json({ error: 'Category is required' });
+    }
 
-        console.log(`📋 Fetching ${category} recipes - Page ${page}, Limit ${limit}`);
+    console.log(`📋 Fetching ${category} recipes - Page ${page}, Limit ${limit}`);
 
-        const skip = (page - 1) * limit;
+    const skip = (page - 1) * limit;
 
-        // =========================
-        // BUILD QUERY
-        // =========================
-        let query = {
-            category: new RegExp(category, 'i')
-        };
+    // =========================
+    // BUILD QUERY
+    // =========================
+    let query = { category: new RegExp(category, 'i') };
 
-        if (dietaryPreferences.length > 0) {
-            query.dietaryTags = { $in: dietaryPreferences };
-        }
+    // Only apply dietary filter if not empty
+    if (Array.isArray(dietaryPreferences) && dietaryPreferences.length > 0) {
+      query.dietaryTags = { $in: dietaryPreferences };
+    }
 
-        // =========================
-        // FETCH FROM DATABASE
-        // =========================
-        const recipes = await Recipe.find(query)
-            .sort({ createdAt: -1 })
-            .skip(skip)
-            .limit(limit)
-            .select('title name image_url ingredients instructions dietaryTags category');
+    // =========================
+    // FETCH FROM DATABASE
+    // =========================
+    let recipes = await Recipe.find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select('title name image_url ingredients instructions dietaryTags category');
 
-        const totalCount = await Recipe.countDocuments(query);
-        const hasMore = skip + recipes.length < totalCount;
+    let totalCount = await Recipe.countDocuments(query);
+    let hasMore = skip + recipes.length < totalCount;
 
-        console.log(`✅ Found ${recipes.length} recipes in database`);
+    console.log(`✅ Found ${recipes.length} recipes in database`);
 
-        if (recipes.length > 0) {
-            return res.json({
-                recipes: recipes.map(recipe => ({
-                    _id: recipe._id,
-                    name: recipe.title || recipe.name,
-                    image_url: recipe.image_url || '',
-                    ingredients: recipe.ingredients || [],
-                    instructions: recipe.instructions || [],
-                    dietaryTags: recipe.dietaryTags || []
-                })),
-                pagination: {
-                    currentPage: page,
-                    totalCount,
-                    hasMore,
-                    recipesPerPage: limit
-                }
-            });
-        }
+    // =========================
+    // If no DB results & page 1, generate with Gemini
+    // =========================
+    if ((recipes.length === 0 || totalCount === 0) && page === 1 && GEMINI_API_KEY) {
+      console.log('⚠️ No DB recipes, generating with Gemini...');
 
-        // =========================
-        // GENERATE WITH GEMINI (PAGE 1 ONLY)
-        // =========================
-        if (page !== 1 || !GEMINI_API_KEY) {
-            return res.json({
-                recipes: [],
-                pagination: {
-                    currentPage: page,
-                    totalCount: 0,
-                    hasMore: false,
-                    recipesPerPage: limit
-                }
-            });
-        }
+      const now = new Date();
+      const timeOfDay =
+        now.getHours() < 12 ? 'morning' :
+        now.getHours() < 18 ? 'afternoon' : 'evening';
 
-        console.log('⚠️ No recipes found, generating with Gemini...');
+      const dietaryPart = dietaryPreferences.length > 0
+        ? `that are ${dietaryPreferences.join(' and ')}`
+        : '';
 
-        const now = new Date();
-        const timeOfDay =
-            now.getHours() < 12 ? 'morning' :
-            now.getHours() < 18 ? 'afternoon' : 'evening';
-
-        const dietaryPart = dietaryPreferences.length > 0
-            ? `that are ${dietaryPreferences.join(' and ')}`
-            : '';
-
-        // =========================
-        // STEP 1: GET NAMES
-        // =========================
-        const namesPrompt = `Suggest 5 unique ${category} recipes ${dietaryPart} ideal for ${timeOfDay}.
+      // STEP 1: Generate recipe names
+      const namesPrompt = `Suggest 5 unique ${category} recipes ${dietaryPart} ideal for ${timeOfDay}.
 Return ONLY a JSON array:
 ["Recipe 1", "Recipe 2", "Recipe 3", "Recipe 4", "Recipe 5"]`;
 
-        let recipeNames = await callGeminiAPI(namesPrompt);
+      let recipeNames = await callGeminiAPI(namesPrompt);
+      if (!Array.isArray(recipeNames)) recipeNames = [];
 
-        // Ensure it's an array
-        if (!Array.isArray(recipeNames)) recipeNames = [];
+      recipeNames = recipeNames.map(item => typeof item === 'string'
+        ? { name: item, ingredients: [], instructions: [], dietaryTags: [] }
+        : item
+      );
 
-        // Convert any string-only items into objects
-        recipeNames = recipeNames.map(item => {
-            if (typeof item === 'string') {
-                return { name: item, ingredients: [], instructions: [], dietaryTags: [] };
-            }
-            return item;
-        });
-
-        // =========================
-        // STEP 2: GET DETAILS
-        // =========================
-        const batchPrompt = `Create detailed recipes for the following dishes.
+      // STEP 2: Generate details
+      const batchPrompt = `Create detailed recipes for the following dishes.
 Analyze ingredients and identify dietaryTags only.
 
 Allowed dietaryTags:
 vegetarian, vegan, gluten-free, dairy-free, keto, paleo, low-carb, halal, kosher
 
-Use lowercase hyphenated format.
 Return ONLY valid JSON array:
 [
   {
@@ -672,102 +631,85 @@ Return ONLY valid JSON array:
 Recipes:
 ${recipeNames.map((r, i) => `${i + 1}. ${r.name}`).join('\n')}`;
 
-        let generatedRecipes = await callGeminiAPI(batchPrompt);
+      let generatedRecipes = await callGeminiAPI(batchPrompt);
+      if (!Array.isArray(generatedRecipes)) generatedRecipes = [];
 
-        if (!Array.isArray(generatedRecipes)) generatedRecipes = [];
+      generatedRecipes = generatedRecipes.map(item =>
+        typeof item === 'string'
+          ? { name: item, ingredients: [], instructions: [], dietaryTags: [] }
+          : item
+      );
 
-        // Convert any string-only items into objects
-        generatedRecipes = generatedRecipes.map(item => {
-            if (typeof item === 'string') {
-                return { name: item, ingredients: [], instructions: [], dietaryTags: [] };
-            }
-            return item;
-        });
+      // STEP 3: Save & format
+      recipes = await Promise.all(generatedRecipes.map(async recipe => {
+        let image_url = '';
+        try { image_url = await fetchImageUrl(recipe.name); } catch {}
 
-        // =========================
-        // SAVE & FORMAT
-        // =========================
-        const finalRecipes = await Promise.all(
-            generatedRecipes.map(async (recipe) => {
-                let image_url = '';
-                try {
-                    image_url = await fetchImageUrl(recipe.name);
-                } catch (err) {
-                    console.warn('⚠️ Image fetch failed:', err.message);
-                }
+        const cleaned = {
+          title: recipe.name,
+          name: recipe.name,
+          image_url,
+          ingredients: Array.isArray(recipe.ingredients) ? recipe.ingredients : [],
+          instructions: Array.isArray(recipe.instructions) ? recipe.instructions : [],
+          dietaryTags: sanitizeArray(recipe.dietaryTags, [
+            'vegetarian','vegan','gluten-free','dairy-free','keto','paleo','low-carb','halal','kosher'
+          ]),
+          category,
+          source: 'gemini'
+        };
 
-                const cleanedRecipe = {
-                    title: recipe.name,
-                    name: recipe.name,
-                    image_url,
-                    ingredients: Array.isArray(recipe.ingredients) ? recipe.ingredients : [],
-                    instructions: Array.isArray(recipe.instructions) ? recipe.instructions : [],
-                    dietaryTags: sanitizeArray(recipe.dietaryTags, [
-                        'vegetarian', 'vegan', 'gluten-free', 'dairy-free',
-                        'keto', 'paleo', 'low-carb', 'halal', 'kosher'
-                    ]),
-                    category,
-                    source: 'gemini'
-                };
+        // Save to DB asynchronously (don’t block)
+        new Recipe(cleaned).save().catch(() => {});
+        return cleaned;
+      }));
 
-                new Recipe(cleanedRecipe).save().catch(() => {});
-
-                return {
-                    name: cleanedRecipe.name,
-                    image_url: cleanedRecipe.image_url,
-                    ingredients: cleanedRecipe.ingredients,
-                    instructions: cleanedRecipe.instructions,
-                    dietaryTags: cleanedRecipe.dietaryTags
-                };
-            })
-        );
-
-        // =========================
-        // FINAL FILTER
-        // =========================
-        const filtered =
-            dietaryPreferences.length > 0
-                ? finalRecipes.filter(r =>
-                    dietaryPreferences.every(p => r.dietaryTags.includes(p))
-                  )
-                : finalRecipes;
-
-        return res.json({
-            recipes: filtered.slice(0, limit),
-            pagination: {
-                currentPage: 1,
-                totalCount: filtered.length,
-                hasMore: filtered.length > limit,
-                recipesPerPage: limit
-            }
-        });
-
-    } catch (error) {
-        console.error('❌ getSuggestionsByCategory error:', error.message);
-        res.status(500).json({
-            error: error.message,
-            recipes: [],
-            pagination: {
-                currentPage: 1,
-                totalCount: 0,
-                hasMore: false,
-                recipesPerPage: 3
-            }
-        });
+      totalCount = recipes.length;
+      hasMore = totalCount > limit;
+      recipes = recipes.slice(0, limit);
     }
+
+    // =========================
+    // Return response
+    // =========================
+    return res.json({
+      recipes: recipes.map(r => ({
+        name: r.name,
+        image_url: r.image_url,
+        ingredients: r.ingredients,
+        instructions: r.instructions,
+        dietaryTags: r.dietaryTags
+      })),
+      pagination: {
+        currentPage: page,
+        totalCount,
+        hasMore,
+        recipesPerPage: limit
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ getSuggestionsByCategory error:', error.message);
+    return res.status(500).json({
+      error: error.message,
+      recipes: [],
+      pagination: {
+        currentPage: page,
+        totalCount: 0,
+        hasMore: false,
+        recipesPerPage: 3
+      }
+    });
+  }
 };
 
-// =========================
-// HELPER
-// =========================
+// Helper
 function sanitizeArray(arr, allowedValues) {
-    if (!Array.isArray(arr)) return [];
-    return [...new Set(
-        arr
-            .filter(v => typeof v === 'string')
-            .map(v => v.toLowerCase().trim())
-            .filter(v => allowedValues.includes(v))
-    )];
+  if (!Array.isArray(arr)) return [];
+  return [...new Set(
+    arr.filter(v => typeof v === 'string')
+       .map(v => v.toLowerCase().trim())
+       .filter(v => allowedValues.includes(v))
+  )];
 }
 
 
