@@ -148,6 +148,87 @@ async function fetchImageUrl(query) {
 }
 
 // ✅ FIXED: Gemini API call without "role" field
+// async function callGeminiAPI(prompt) {
+//     try {
+//         if (!GEMINI_API_KEY || GEMINI_API_KEY === 'undefined') {
+//             throw new Error('GEMINI_API_KEY is not configured');
+//         }
+
+//         console.log('🔹 Calling Gemini API...');
+//         console.log('🔹 Prompt length:', prompt.length);
+
+//         // ✅ CORRECT REQUEST FORMAT - No "role" field!
+//         const requestBody = {
+//             contents: [{
+//                 parts: [{
+//                     text: prompt
+//                 }]
+//             }]
+//         };
+
+//         console.log('🔹 Request structure:', JSON.stringify({ 
+//             contentsCount: requestBody.contents.length,
+//             partsCount: requestBody.contents[0].parts.length 
+//         }));
+
+//         const response = await axios.post(
+//             GEMINI_URL,
+//             requestBody,
+//             {
+//                 headers: { "Content-Type": "application/json" },
+//                 timeout: 30000,
+//                 validateStatus: (status) => status < 500
+//             }
+//         );
+
+//         console.log('✅ Gemini Response Status:', response.status);
+
+//         if (response.status !== 200) {
+//             console.error('❌ Gemini Error Response:', JSON.stringify(response.data, null, 2));
+//             throw new Error(`Gemini API returned status ${response.status}: ${JSON.stringify(response.data)}`);
+//         }
+
+//         if (!response.data?.candidates?.[0]?.content?.parts?.[0]?.text) {
+//             console.error('❌ Invalid response structure:', JSON.stringify(response.data, null, 2));
+//             throw new Error('Invalid response structure from Gemini API');
+//         }
+
+//         let content = response.data.candidates[0].content.parts[0].text;
+        
+//         // Clean markdown formatting
+//         content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+        
+//         console.log('🔹 Cleaned response (first 200 chars):', content.substring(0, 200));
+
+//         // Parse JSON
+//         const parsed = JSON.parse(content);
+//         console.log('✅ Successfully parsed JSON response');
+        
+//         return parsed;
+
+//     } catch (error) {
+//         console.error('❌ Gemini API Error Details:');
+//         console.error('- Type:', error.constructor.name);
+//         console.error('- Message:', error.message);
+        
+//         if (error.response) {
+//             console.error('- Status:', error.response.status);
+//             console.error('- Status Text:', error.response.statusText);
+//             console.error('- Response Data:', JSON.stringify(error.response.data, null, 2));
+//         }
+        
+//         if (error.code === 'ECONNABORTED') {
+//             throw new Error('Gemini API request timed out after 30 seconds');
+//         }
+        
+//         if (error.message.includes('JSON')) {
+//             throw new Error(`Failed to parse Gemini response as JSON: ${error.message}`);
+//         }
+        
+//         throw new Error(`Gemini API failed: ${error.message}`);
+//     }
+// }
+
 async function callGeminiAPI(prompt) {
     try {
         if (!GEMINI_API_KEY || GEMINI_API_KEY === 'undefined') {
@@ -157,7 +238,6 @@ async function callGeminiAPI(prompt) {
         console.log('🔹 Calling Gemini API...');
         console.log('🔹 Prompt length:', prompt.length);
 
-        // ✅ CORRECT REQUEST FORMAT - No "role" field!
         const requestBody = {
             contents: [{
                 parts: [{
@@ -176,7 +256,7 @@ async function callGeminiAPI(prompt) {
             requestBody,
             {
                 headers: { "Content-Type": "application/json" },
-                timeout: 30000,
+                timeout: 60000, // ✅ CHANGED: Increased from 30000 to 60000 (60 seconds)
                 validateStatus: (status) => status < 500
             }
         );
@@ -218,7 +298,7 @@ async function callGeminiAPI(prompt) {
         }
         
         if (error.code === 'ECONNABORTED') {
-            throw new Error('Gemini API request timed out after 30 seconds');
+            throw new Error('Gemini API request timed out after 60 seconds'); // ✅ CHANGED: Updated error message
         }
         
         if (error.message.includes('JSON')) {
@@ -542,7 +622,6 @@ const getSuggestionsByCategory = async (req, res) => {
             }
 
             try {
-                // Generate recipe names
                 const now = new Date();
                 const hour = now.getHours();
                 const timeOfDay = hour < 12 ? 'morning' : (hour < 18 ? 'afternoon' : 'evening');
@@ -552,16 +631,23 @@ const getSuggestionsByCategory = async (req, res) => {
                     ? `that are ${dietaryPreferences.join(' and ')}`
                     : '';
 
-                const namesPrompt = `Suggest 10 unique ${category} recipes ${dietaryPart} ideal for ${timeOfDay}. Variety seed: ${seed}. Return ONLY a JSON array: ["Recipe 1", "Recipe 2", ...]`;
+                // ✅ FIX 1: Generate only 5 recipe names (not 10)
+                const namesPrompt = `Suggest 5 unique ${category} recipes ${dietaryPart} ideal for ${timeOfDay}. Variety seed: ${seed}. Return ONLY a JSON array: ["Recipe 1", "Recipe 2", "Recipe 3", "Recipe 4", "Recipe 5"]`;
                 
                 console.log('🔹 Fetching recipe names from Gemini...');
                 const recipeNames = await callGeminiAPI(namesPrompt);
                 console.log(`✅ Got ${recipeNames.length} recipe names`);
 
-                // ✅ SIMPLIFIED: Let Gemini use its own knowledge
-                const batchPrompt = `Create detailed recipes for the following dishes. Analyze the ingredients in each recipe and accurately identify:
-- dietaryTags: Which dietary categories does this recipe fit? (e.g., vegetarian, vegan, gluten-free, dairy-free, nut-free, keto, paleo, low-carb, halal, kosher)
-- allergens: Which common allergens are present? (e.g., dairy, eggs, fish, shellfish, tree nuts, peanuts, wheat, soybeans, sesame)
+                // ✅ FIX 2: Generate recipes in smaller batches to avoid timeout
+                const batchSize = 3; // Process 3 recipes at a time
+                const allRecipes = [];
+
+                for (let i = 0; i < recipeNames.length; i += batchSize) {
+                    const batch = recipeNames.slice(i, i + batchSize);
+                    
+                    const batchPrompt = `Create detailed recipes for these dishes. Analyze ingredients and identify:
+- dietaryTags: dietary categories (vegetarian, vegan, gluten-free, dairy-free, nut-free, keto, paleo, low-carb, halal, kosher)
+- allergens: common allergens present (dairy, eggs, fish, shellfish, tree nuts, peanuts, wheat, soybeans, sesame)
 
 Use lowercase, hyphenated format. Return ONLY valid JSON array:
 [
@@ -569,26 +655,37 @@ Use lowercase, hyphenated format. Return ONLY valid JSON array:
     "name": "Recipe Name",
     "ingredients": [{"name": "ingredient", "quantity": "amount"}],
     "instructions": ["Step 1", "Step 2"],
-    "dietaryTags": ["vegetarian", "dairy-free"],
-    "allergens": ["wheat", "eggs"]
+    "dietaryTags": ["vegetarian"],
+    "allergens": ["wheat"]
   }
 ]
 
 Recipes:
-${recipeNames.map((name, i) => `${i + 1}. ${name}`).join('\n')}`;
+${batch.map((name, idx) => `${idx + 1}. ${name}`).join('\n')}`;
 
-                console.log('🔹 Fetching batch recipe details...');
-                const batchRecipes = await callGeminiAPI(batchPrompt);
-                console.log(`✅ Got ${batchRecipes.length} full recipes`);
+                    console.log(`🔹 Fetching batch ${Math.floor(i / batchSize) + 1} (${batch.length} recipes)...`);
+                    
+                    const batchRecipes = await callGeminiAPI(batchPrompt);
+                    allRecipes.push(...batchRecipes);
+                    
+                    console.log(`✅ Got ${batchRecipes.length} recipes from batch`);
+                    
+                    // Small delay between batches to respect rate limits
+                    if (i + batchSize < recipeNames.length) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                }
+
+                console.log(`✅ Total recipes generated: ${allRecipes.length}`);
 
                 // Process and save recipes
                 const recipesWithImages = await Promise.all(
-                    batchRecipes.slice(0, 10).map(async (recipe) => {
+                    allRecipes.map(async (recipe) => {
                         try {
                             // Fetch image
                             recipe.image_url = await fetchImageUrl(recipe.name);
                             
-                            // Light cleanup: only filter to ensure valid enum values
+                            // Light cleanup
                             const cleanedRecipe = {
                                 title: recipe.name,
                                 name: recipe.name,
@@ -631,7 +728,7 @@ ${recipeNames.map((name, i) => `${i + 1}. ${name}`).join('\n')}`;
 
                 console.log('✅ Returning generated recipes to client');
                 
-                // Filter results based on user preferences if any were generated
+                // Filter results based on user preferences
                 let filteredRecipes = recipesWithImages;
                 if (dietaryPreferences.length > 0) {
                     filteredRecipes = recipesWithImages.filter(recipe => {
@@ -697,8 +794,6 @@ ${recipeNames.map((name, i) => `${i + 1}. ${name}`).join('\n')}`;
     }
 };
 
-// ==================== HELPER FUNCTION ====================
-
 function sanitizeArray(arr, allowedValues) {
     if (!Array.isArray(arr)) return [];
     
@@ -706,7 +801,7 @@ function sanitizeArray(arr, allowedValues) {
         .filter(item => typeof item === 'string')
         .map(item => item.toLowerCase().trim())
         .filter(item => allowedValues.includes(item))
-        .filter((item, index, self) => self.indexOf(item) === index); // Remove duplicates
+        .filter((item, index, self) => self.indexOf(item) === index);
 }
 
 const getMultipleRecipes = async (req, res) => {
