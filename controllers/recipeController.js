@@ -548,26 +548,23 @@ const getRecipeSuggestions = async (req, res) => {
 };
 
 const getSuggestionsByCategory = async (req, res) => {
-  // Fallback defaults
-  const safePage = req.body?.page ?? 1;
-  const safeLimit = req.body?.limit ?? 3;
-
   try {
-    const { category, dietaryPreferences = [] } = req.body;
+    const { category, dietaryPreferences = [], page = 1, limit = 3 } = req.body;
 
     if (!category) {
       return res.status(400).json({ error: 'Category is required' });
     }
 
-    console.log(`📋 Fetching ${category} recipes - Page ${safePage}, Limit ${safeLimit}`);
+    console.log(`📋 Fetching ${category} recipes - Page ${page}, Limit ${limit}`);
 
-    const skip = (safePage - 1) * safeLimit;
+    const skip = (page - 1) * limit;
 
     // =========================
     // BUILD QUERY
     // =========================
     let query = { category: new RegExp(category, 'i') };
 
+    // Only apply dietary filter if not empty
     if (Array.isArray(dietaryPreferences) && dietaryPreferences.length > 0) {
       query.dietaryTags = { $in: dietaryPreferences };
     }
@@ -578,7 +575,7 @@ const getSuggestionsByCategory = async (req, res) => {
     let recipes = await Recipe.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(safeLimit)
+      .limit(limit)
       .select('title name image_url ingredients instructions dietaryTags category');
 
     let totalCount = await Recipe.countDocuments(query);
@@ -587,9 +584,9 @@ const getSuggestionsByCategory = async (req, res) => {
     console.log(`✅ Found ${recipes.length} recipes in database`);
 
     // =========================
-    // GENERATE VIA GEMINI IF NEEDED
+    // If no DB results & page 1, generate with Gemini
     // =========================
-    if ((recipes.length === 0 || totalCount === 0) && safePage === 1 && GEMINI_API_KEY) {
+    if ((recipes.length === 0 || totalCount === 0) && page === 1 && GEMINI_API_KEY) {
       console.log('⚠️ No DB recipes, generating with Gemini...');
 
       const now = new Date();
@@ -606,20 +603,15 @@ const getSuggestionsByCategory = async (req, res) => {
 Return ONLY a JSON array:
 ["Recipe 1", "Recipe 2", "Recipe 3", "Recipe 4", "Recipe 5"]`;
 
-      let recipeNames = [];
-      try {
-        recipeNames = await callGeminiAPI(namesPrompt);
-        if (!Array.isArray(recipeNames)) recipeNames = [];
-      } catch (err) {
-        console.error('⚠️ Gemini API name generation failed:', err.message);
-      }
+      let recipeNames = await callGeminiAPI(namesPrompt);
+      if (!Array.isArray(recipeNames)) recipeNames = [];
 
       recipeNames = recipeNames.map(item => typeof item === 'string'
         ? { name: item, ingredients: [], instructions: [], dietaryTags: [] }
         : item
       );
 
-      // STEP 2: Generate full recipe details
+      // STEP 2: Generate details
       const batchPrompt = `Create detailed recipes for the following dishes.
 Analyze ingredients and identify dietaryTags only.
 
@@ -639,13 +631,8 @@ Return ONLY valid JSON array:
 Recipes:
 ${recipeNames.map((r, i) => `${i + 1}. ${r.name}`).join('\n')}`;
 
-      let generatedRecipes = [];
-      try {
-        generatedRecipes = await callGeminiAPI(batchPrompt);
-        if (!Array.isArray(generatedRecipes)) generatedRecipes = [];
-      } catch (err) {
-        console.error('⚠️ Gemini API recipe generation failed:', err.message);
-      }
+      let generatedRecipes = await callGeminiAPI(batchPrompt);
+      if (!Array.isArray(generatedRecipes)) generatedRecipes = [];
 
       generatedRecipes = generatedRecipes.map(item =>
         typeof item === 'string'
@@ -653,7 +640,7 @@ ${recipeNames.map((r, i) => `${i + 1}. ${r.name}`).join('\n')}`;
           : item
       );
 
-      // STEP 3: Save to DB & format
+      // STEP 3: Save & format
       recipes = await Promise.all(generatedRecipes.map(async recipe => {
         let image_url = '';
         try { image_url = await fetchImageUrl(recipe.name); } catch {}
@@ -671,18 +658,18 @@ ${recipeNames.map((r, i) => `${i + 1}. ${r.name}`).join('\n')}`;
           source: 'gemini'
         };
 
-        // Save asynchronously
-        new Recipe(cleaned).save().catch(e => console.error('⚠️ Save error:', e.message));
+        // Save to DB asynchronously (don’t block)
+        new Recipe(cleaned).save().catch(() => {});
         return cleaned;
       }));
 
       totalCount = recipes.length;
-      hasMore = totalCount > safeLimit;
-      recipes = recipes.slice(0, safeLimit);
+      hasMore = totalCount > limit;
+      recipes = recipes.slice(0, limit);
     }
 
     // =========================
-    // RETURN RESPONSE
+    // Return response
     // =========================
     return res.json({
       recipes: recipes.map(r => ({
@@ -693,32 +680,29 @@ ${recipeNames.map((r, i) => `${i + 1}. ${r.name}`).join('\n')}`;
         dietaryTags: r.dietaryTags
       })),
       pagination: {
-        currentPage: safePage,
+        currentPage: page,
         totalCount,
         hasMore,
-        recipesPerPage: safeLimit
+        recipesPerPage: limit
       }
     });
 
   } catch (error) {
     console.error('❌ getSuggestionsByCategory error:', error.message);
-
     return res.status(500).json({
       error: error.message,
       recipes: [],
       pagination: {
-        currentPage: safePage,
+        currentPage: page,
         totalCount: 0,
         hasMore: false,
-        recipesPerPage: safeLimit
+        recipesPerPage: 3
       }
     });
   }
 };
 
-// =========================
-// Helper to sanitize dietary tags
-// =========================
+// Helper
 function sanitizeArray(arr, allowedValues) {
   if (!Array.isArray(arr)) return [];
   return [...new Set(
@@ -727,7 +711,6 @@ function sanitizeArray(arr, allowedValues) {
        .filter(v => allowedValues.includes(v))
   )];
 }
-
 
 
 
