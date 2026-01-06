@@ -478,28 +478,28 @@ const getRecipesByIngredients = async (req, res) => {
 
     // =========================
     // STEP 1: Search in MongoDB
+    // Match recipes that contain all user ingredients (allow extra ingredients)
     // =========================
-    const dbRecipes = await Recipe.find({
+    let dbRecipes = await Recipe.find({
       'ingredients.name': {
         $all: normalizedIngredients.map(i => new RegExp(`^${i}$`, 'i'))
-      },
-      $expr: { $eq: [ { $size: "$ingredients" }, normalizedIngredients.length ] }
-    }).limit(5);
+      }
+    }).limit(10);
 
     if (dbRecipes.length > 0) {
-      // Map to clean response
+      // Map DB recipes to clean response
       const response = dbRecipes.map(r => ({
         name: r.title || r.name,
         image_url: r.image_url || '',
         ingredients: r.ingredients,
-        instructions: r.instructions,
+        instructions: r.instructions || [],
         dietaryTags: r.dietaryTags || []
       }));
       return res.json(response);
     }
 
     // =========================
-    // STEP 2: Call Gemini if DB has no results
+    // STEP 2: No DB recipes, call Gemini
     // =========================
     if (!process.env.GEMINI_API_KEY) {
       return res.status(503).json({ error: 'Recipe generation service unavailable' });
@@ -515,14 +515,13 @@ Return JSON array without markdown:
 
     let geminiRecipes = await callGeminiAPI(prompt);
 
-    // Filter to include only recipes that strictly match the ingredients
+    // Filter to strictly match ingredients
     geminiRecipes = geminiRecipes.filter(recipe =>
       Array.isArray(recipe.ingredients) &&
-      recipe.ingredients.length === normalizedIngredients.length &&
       recipe.ingredients.every(ing => normalizedIngredients.includes(ing.name.toLowerCase()))
     );
 
-    // Fetch images and save to DB
+    // Save generated recipes to DB and fetch images
     const recipesWithImages = await Promise.all(
       geminiRecipes.map(async (recipe) => {
         recipe.image_url = await fetchImageUrl(recipe.name);
@@ -547,6 +546,7 @@ Return JSON array without markdown:
     return res.status(500).json({ error: error.message });
   }
 };
+
 
 
 const getRecipeSuggestions = async (req, res) => {
