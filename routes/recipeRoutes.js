@@ -83,7 +83,8 @@ const {
   getRecipesByIngredients,
   getRecipeSuggestions,
   getSuggestionsByCategory,
-  getMultipleRecipes
+  getMultipleRecipes,
+  generateWeeklyMealPlan
 } = require('../controllers/recipeController');
 
 const { authenticateToken } = require('../middleware/auth');
