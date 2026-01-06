@@ -547,6 +547,140 @@ Return JSON array without markdown:
   }
 };
 
+const generateWeeklyMealPlan = async (req, res) => {
+    try {
+        console.log('=== generateWeeklyMealPlan called ===');
+        const { diet, goal, calories } = req.body;
+
+        console.log('📝 Diet:', diet);
+        console.log('🎯 Goal:', goal);
+        console.log('🔥 Calories:', calories);
+
+        // Validate input
+        if (!diet || !goal || !calories) {
+            return res.status(400).json({ 
+                error: 'Missing required fields: diet, goal, and calories are required' 
+            });
+        }
+
+        if (calories < 1200 || calories > 4000) {
+            return res.status(400).json({ 
+                error: 'Calories must be between 1200 and 4000' 
+            });
+        }
+
+        // Check if Gemini API key is configured
+        if (!GEMINI_API_KEY || GEMINI_API_KEY === 'undefined') {
+            return res.status(503).json({ 
+                error: 'Meal plan generation service is unavailable',
+                hint: 'GEMINI_API_KEY is not configured'
+            });
+        }
+
+        console.log('🤖 Calling Gemini API for meal plan generation...');
+
+        // Create the prompt for Gemini
+        const dietInstruction = diet !== 'None' 
+            ? `All meals must be ${diet}.` 
+            : '';
+
+        const goalInstruction = goal === 'Lose Weight' 
+            ? 'Focus on low-calorie, filling meals.' 
+            : goal === 'Gain Muscle' 
+            ? 'Include high-protein meals.' 
+            : goal === 'Stay Healthy' 
+            ? 'Provide balanced, nutritious meals.' 
+            : 'Maintain balanced portions.';
+
+        const prompt = `Create a complete 7-day meal plan with the following requirements:
+- Diet type: ${diet}
+- Goal: ${goal}
+- Daily calorie target: ${calories} calories
+- ${dietInstruction}
+- ${goalInstruction}
+
+For each day (Monday through Sunday), provide:
+- Breakfast (approximately 30% of daily calories)
+- Lunch (approximately 35% of daily calories)
+- Dinner (approximately 35% of daily calories)
+
+Return ONLY valid JSON without any markdown or code blocks:
+{
+  "Monday": [
+    {"meal": "Breakfast", "recipe": "Recipe name", "calories": 600},
+    {"meal": "Lunch", "recipe": "Recipe name", "calories": 700},
+    {"meal": "Dinner", "recipe": "Recipe name", "calories": 700}
+  ],
+  "Tuesday": [...],
+  "Wednesday": [...],
+  "Thursday": [...],
+  "Friday": [...],
+  "Saturday": [...],
+  "Sunday": [...]
+}`;
+
+        let mealPlan;
+        try {
+            mealPlan = await callGeminiAPI(prompt);
+            console.log('✅ Gemini API call successful');
+        } catch (geminiError) {
+            console.error('❌ Gemini API call failed:', geminiError.message);
+            return res.status(500).json({ 
+                error: 'Failed to generate meal plan from AI',
+                details: geminiError.message
+            });
+        }
+
+        // Validate the response structure
+        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+        const isValid = days.every(day => 
+            mealPlan[day] && 
+            Array.isArray(mealPlan[day]) && 
+            mealPlan[day].length === 3
+        );
+
+        if (!isValid) {
+            console.error('❌ Invalid meal plan structure received');
+            return res.status(500).json({ 
+                error: 'Received invalid meal plan structure from AI'
+            });
+        }
+
+        // Normalize the meal plan
+        const normalizedPlan = {};
+        days.forEach(day => {
+            normalizedPlan[day] = mealPlan[day].map(meal => ({
+                meal: meal.meal || meal.type || 'Meal',
+                recipe: meal.recipe || meal.name || 'Recipe',
+                calories: parseInt(meal.calories) || 0
+            }));
+        });
+
+        console.log('✅ Returning generated meal plan to client');
+        res.json({
+            mealPlan: normalizedPlan,
+            summary: {
+                diet,
+                goal,
+                dailyCalories: calories,
+                generatedAt: new Date().toISOString()
+            }
+        });
+
+    } catch (error) {
+        console.error('❌ CRITICAL ERROR in generateWeeklyMealPlan:');
+        console.error('- Type:', error.constructor.name);
+        console.error('- Message:', error.message);
+        console.error('- Stack:', error.stack);
+        
+        res.status(500).json({ 
+            error: 'Internal server error',
+            message: error.message,
+            type: error.constructor.name
+        });
+    }
+};
+
 
 
 const getRecipeSuggestions = async (req, res) => {
@@ -791,5 +925,6 @@ module.exports = {
     getRecipesByIngredients,
     getRecipeSuggestions,
     getSuggestionsByCategory,
-    getMultipleRecipes
+    getMultipleRecipes,
+    generateWeeklyMealPlan
 };

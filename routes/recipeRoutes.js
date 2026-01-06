@@ -112,6 +112,8 @@ router.delete('/recipes/:id', authenticateToken, deleteRecipe);
 // Generate single recipe
 router.post('/generate', generateRecipe);
 
+router.post('/generate-meal-plan', generateWeeklyMealPlan);
+
 // Get recipes by available ingredients
 router.post('/by-ingredients', getRecipesByIngredients);
 
