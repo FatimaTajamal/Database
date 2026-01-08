@@ -701,37 +701,43 @@ const getRecipeSuggestions = async (req, res) => {
     }
 };
 
+/* ===============================
+   HELPERS
+================================ */
+
+function normalizeTitle(title) {
+  return title
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, ' ');
+}
+
 function normalizeGeminiRecipe(recipe) {
   if (!recipe || typeof recipe !== 'object') return null;
 
-  const title =
+  const rawTitle =
     recipe.title ||
     recipe.name ||
     recipe.recipeName ||
     '';
 
-  if (!title.trim()) return null;
+  if (!rawTitle.trim()) return null;
 
   const ingredients = Array.isArray(recipe.ingredients)
     ? recipe.ingredients
     : [];
 
-  let instructions = [];
-  if (Array.isArray(recipe.instructions)) {
-    instructions = recipe.instructions
-      .map(step => {
-        if (typeof step === 'string') return step;
-        if (typeof step === 'object' && step.description)
-          return step.description;
-        return null;
-      })
-      .filter(Boolean);
-  }
+  const instructions = Array.isArray(recipe.instructions)
+    ? recipe.instructions.filter(
+        s => typeof s === 'string' && s.trim()
+      )
+    : [];
 
   if (!ingredients.length || !instructions.length) return null;
 
   return {
-    title: title.trim(),
+    title: rawTitle.trim(),
+    normalizedTitle: normalizeTitle(rawTitle),
     ingredients,
     instructions,
     dietaryTags: Array.isArray(recipe.dietaryTags)
@@ -763,42 +769,39 @@ const getSuggestionsByCategory = async (req, res) => {
        QUERY
     ----------------------------- */
     const query = {
-      category: new RegExp(`^${category}$`, 'i')
+      category,
+      ...(dietaryPreferences.length > 0 && {
+        dietaryTags: { $in: dietaryPreferences }
+      })
     };
 
-    if (dietaryPreferences.length > 0) {
-      query.dietaryTags = { $in: dietaryPreferences };
-    }
-
     /* -----------------------------
-       EXISTING TITLES (ANTI-DUP)
+       COUNT (SOURCE OF TRUTH)
     ----------------------------- */
-    const existingTitles = await Recipe.find(query)
-      .select('title -_id')
-      .lean();
-
-    const usedTitles = existingTitles.map(r => r.title);
-
-    let totalCount = existingTitles.length;
+    let totalCount = await Recipe.countDocuments(query);
     const requiredCount = page * limit;
 
     /* -----------------------------
-       GENERATE IF NEEDED
+       GENERATE IF MISSING
     ----------------------------- */
     if (totalCount < requiredCount && process.env.GEMINI_API_KEY) {
       const toGenerate = requiredCount - totalCount;
 
-      console.log(`⚡ Generating ${toGenerate} new ${category} recipes`);
+      console.log(`⚡ Need ${toGenerate} new recipes`);
+
+      // Titles already in DB (normalized)
+      const existing = await Recipe.find(query)
+        .select('normalizedTitle -_id')
+        .lean();
+
+      const blockedTitles = existing.map(r => r.normalizedTitle);
 
       /* ---- STEP 1: NAMES ---- */
       const namesPrompt = `
 Suggest ${toGenerate} UNIQUE ${category} recipes.
 
-DO NOT repeat or closely resemble any of these:
-${usedTitles.slice(0, 30).join('\n')}
-
-Each recipe MUST be appropriate ONLY for the category "${category}".
-Lunch ≠ Dinner ≠ Breakfast.
+DO NOT generate recipes similar to:
+${blockedTitles.join('\n')}
 
 Return ONLY a JSON array of NEW recipe names.
 `;
@@ -812,17 +815,14 @@ Return ONLY a JSON array of NEW recipe names.
 
       /* ---- STEP 2: DETAILS ---- */
       const detailPrompt = `
-Create detailed recipes for the following ${category} dishes.
+Create detailed ${category} recipes.
 
 Return ONLY valid JSON array.
 
-Allowed dietaryTags:
-vegetarian, vegan, gluten-free, dairy-free, keto, paleo, low-carb, halal, kosher
-
 Each recipe MUST include:
 - title
-- ingredients (array of strings)
-- instructions (array of strings)
+- ingredients (array)
+- instructions (array)
 
 Recipes:
 ${names.map((n, i) => `${i + 1}. ${n}`).join('\n')}
@@ -831,57 +831,52 @@ ${names.map((n, i) => `${i + 1}. ${n}`).join('\n')}
       let generated = await callGeminiAPI(detailPrompt);
       if (!Array.isArray(generated)) generated = [];
 
-      /* ---- STEP 3: SAVE ---- */
+      /* ---- STEP 3: SAVE (SAFE) ---- */
       for (const raw of generated) {
-        const normalized = normalizeGeminiRecipe(raw);
-        if (!normalized) continue;
+        const recipe = normalizeGeminiRecipe(raw);
+        if (!recipe) continue;
 
+        // DB-level duplicate protection
         const exists = await Recipe.exists({
-          title: normalized.title,
+          normalizedTitle: recipe.normalizedTitle,
           category
         });
 
         if (exists) {
-          console.log(`⏭ Duplicate skipped: ${normalized.title}`);
+          console.log(`⏭ Duplicate skipped: ${recipe.title}`);
           continue;
         }
 
         let image_url = '';
         try {
-          image_url = await fetchImageUrl(normalized.title);
-        } catch {
-          image_url = '';
-        }
+          image_url = await fetchImageUrl(recipe.title);
+        } catch {}
 
         await Recipe.create({
-          title: normalized.title,
-          name: normalized.title,
+          title: recipe.title,
+          normalizedTitle: recipe.normalizedTitle,
+          name: recipe.title,
           image_url,
-          ingredients: normalized.ingredients,
-          instructions: normalized.instructions,
-          dietaryTags: sanitizeArray(normalized.dietaryTags, [
-            'vegetarian','vegan','gluten-free','dairy-free',
-            'keto','paleo','low-carb','halal','kosher'
-          ]),
+          ingredients: recipe.ingredients,
+          instructions: recipe.instructions,
+          dietaryTags: recipe.dietaryTags,
           category,
           source: 'gemini'
         });
 
-        console.log(`✅ Saved: ${normalized.title}`);
+        console.log(`✅ Saved: ${recipe.title}`);
       }
 
       totalCount = await Recipe.countDocuments(query);
     }
 
     /* -----------------------------
-       FETCH (SHUFFLED)
+       FETCH PAGE (REAL PAGINATION)
     ----------------------------- */
-    const recipes = await Recipe.aggregate([
-      { $match: query },
-      { $sample: { size: limit } }
-    ]);
-
-    const hasMore = totalCount > page * limit;
+    const recipes = await Recipe.find(query)
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(limit);
 
     return res.json({
       recipes: recipes.map(r => ({
@@ -894,7 +889,7 @@ ${names.map((n, i) => `${i + 1}. ${n}`).join('\n')}
       pagination: {
         currentPage: page,
         totalCount,
-        hasMore,
+        hasMore: page * limit < totalCount,
         recipesPerPage: limit
       }
     });
