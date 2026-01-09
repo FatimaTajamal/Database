@@ -125,7 +125,7 @@ async function fetchImageUrl(query) {
         let simplifiedQuery = query.split(":")[0].trim().replace(/[&:(),]/g, '');
         const words = simplifiedQuery.split(" ");
         if (words.length > 4) simplifiedQuery = words.slice(0, 4).join(" ");
-        simplifiedQuery = ${simplifiedQuery} food;
+        simplifiedQuery = `${simplifiedQuery} food`;
 
         const response = await axios.get('https://pixabay.com/api/', {
             params: {
