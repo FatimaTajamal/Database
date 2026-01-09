@@ -119,33 +119,48 @@ const deleteRecipe = async (req, res) => {
 
 // ==================== HELPER FUNCTIONS ====================
 
-async function fetchImageUrl(query) {
+async function fetchImageUrl(recipeName) {
     try {
-        const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY || "51392156-8eaa4d6a677c8e44156c40208";
-        let simplifiedQuery = query.split(":")[0].trim().replace(/[&:(),]/g, '');
-        const words = simplifiedQuery.split(" ");
-        if (words.length > 4) simplifiedQuery = words.slice(0, 4).join(" ");
-        simplifiedQuery = `${simplifiedQuery} food`;
+        const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY;
 
-        const response = await axios.get('https://pixabay.com/api/', {
+        if (!PIXABAY_API_KEY) return '';
+
+        // 🔹 Clean & normalize query
+        let query = recipeName
+            .toLowerCase()
+            .replace(/recipe|traditional|style|homemade/gi, '')
+            .replace(/[^a-z\s]/g, '')
+            .trim();
+
+        // Limit words
+        query = query.split(' ').slice(0, 3).join(' ');
+
+        // Force food relevance
+        query = `${query} pakistani food`;
+
+        const { data } = await axios.get('https://pixabay.com/api/', {
             params: {
                 key: PIXABAY_API_KEY,
-                q: simplifiedQuery,
+                q: query,
                 image_type: 'photo',
                 category: 'food',
-                safesearch: true
+                safesearch: true,
+                per_page: 3
             },
             timeout: 5000
         });
 
-        if (response.data.hits && response.data.hits.length > 0) {
-            return response.data.hits[0].webformatURL;
+        if (data?.hits?.length) {
+            return data.hits[0].webformatURL;
         }
-    } catch (error) {
-        console.error('⚠️ Image fetch error (non-critical):', error.message);
+
+    } catch (err) {
+        console.error('Pixabay error:', err.message);
     }
+
     return '';
 }
+
 
 // ✅ FIXED: Gemini API call without "role" field
 // async function callGeminiAPI(prompt) {
@@ -356,15 +371,18 @@ const generateRecipe = async (req, res) => {
                 return { name: String(ing), quantity: '' };
             });
             
-            return res.json({
-                name: recipe.title || recipe.name,
-                image_url: recipe.image_url || '',
-                ingredients: normalizedIngredients,
-                instructions: recipe.instructions || [],
-                dietaryTags: recipe.dietaryTags || [],
-                allergens: recipe.allergens || [],
-                source: recipe.source || 'database'
-            });
+            const image_url = await fetchImageUrl(recipe.title || recipe.name);
+
+return res.json({
+    name: recipe.title || recipe.name,
+    image_url, // ALWAYS generated
+    ingredients: normalizedIngredients,
+    instructions: recipe.instructions || [],
+    dietaryTags: recipe.dietaryTags || [],
+    allergens: recipe.allergens || [],
+    source: 'database'
+});
+
         }
 
         console.log('❌ NOT FOUND IN DATABASE');
