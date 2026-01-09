@@ -496,83 +496,103 @@ const getRecipesByIngredients = async (req, res) => {
   try {
     const { ingredients = [], dietaryPreferences = [] } = req.body;
 
-    if (!ingredients || ingredients.length === 0) {
+    if (!ingredients.length) {
       return res.status(400).json({ error: 'At least one ingredient is required' });
     }
 
-    // Normalize ingredients: trim and lowercase
-    const normalizedIngredients = ingredients.map(i => i.trim().toLowerCase());
+    const normalizedIngredients = ingredients.map(i =>
+      i.trim().toLowerCase()
+    );
 
     // =========================
-    // STEP 1: Search in MongoDB
-    // Match recipes that contain all user ingredients (allow extra ingredients)
+    // STEP 1: Search MongoDB
     // =========================
-    let dbRecipes = await Recipe.find({
+    const dbRecipes = await Recipe.find({
       'ingredients.name': {
         $all: normalizedIngredients.map(i => new RegExp(`^${i}$`, 'i'))
       }
     }).limit(10);
 
-    if (dbRecipes.length > 0) {
-      // Map DB recipes to clean response
-      const response = dbRecipes.map(r => ({
-        name: r.title || r.name,
-        image_url: r.image_url || '',
-        ingredients: r.ingredients,
-        instructions: r.instructions || [],
-        dietaryTags: r.dietaryTags || []
-      }));
+    if (dbRecipes.length) {
+      const response = await Promise.all(
+        dbRecipes.map(async r => ({
+          name: r.title || r.name,
+          image_url: await fetchImageUrl(r.title || r.name), // ✅ FIX
+          ingredients: r.ingredients,
+          instructions: r.instructions || [],
+          dietaryTags: r.dietaryTags || []
+        }))
+      );
+
       return res.json(response);
     }
 
     // =========================
-    // STEP 2: No DB recipes, call Gemini
+    // STEP 2: Gemini fallback
     // =========================
     if (!process.env.GEMINI_API_KEY) {
       return res.status(503).json({ error: 'Recipe generation service unavailable' });
     }
 
-    const dietaryPart = dietaryPreferences.length > 0 
+    const dietaryPart = dietaryPreferences.length
       ? `suitable for ${dietaryPreferences.join(', ')}`
       : '';
 
-    const prompt = `Suggest 5 recipes using ONLY these ingredients: ${normalizedIngredients.join(', ')}. ${dietaryPart}. 
+    const prompt = `
+Suggest 5 recipes using ONLY these ingredients: ${normalizedIngredients.join(', ')}.
+${dietaryPart}
 Return JSON array without markdown:
-[{"name":"Recipe Name","ingredients":[{"name":"ingredient","quantity":"amount"}],"instructions":["Step 1"],"dietaryTags":[]}]`;
+[
+  {
+    "name": "Recipe Name",
+    "ingredients": [{"name":"ingredient","quantity":"amount"}],
+    "instructions": ["Step 1"],
+    "dietaryTags": []
+  }
+]`;
 
     let geminiRecipes = await callGeminiAPI(prompt);
 
-    // Filter to strictly match ingredients
-    geminiRecipes = geminiRecipes.filter(recipe =>
-      Array.isArray(recipe.ingredients) &&
-      recipe.ingredients.every(ing => normalizedIngredients.includes(ing.name.toLowerCase()))
+    // Strict ingredient filter
+    geminiRecipes = geminiRecipes.filter(r =>
+      Array.isArray(r.ingredients) &&
+      r.ingredients.every(i =>
+        normalizedIngredients.includes(i.name.toLowerCase())
+      )
     );
 
-    // Save generated recipes to DB and fetch images
-    const recipesWithImages = await Promise.all(
-      geminiRecipes.map(async (recipe) => {
-        recipe.image_url = await fetchImageUrl(recipe.name);
-        const newRecipe = new Recipe({
+    const response = await Promise.all(
+      geminiRecipes.map(async recipe => {
+        const image_url = await fetchImageUrl(recipe.name);
+
+        // Save recipe WITHOUT relying on stored image later
+        await new Recipe({
           title: recipe.name,
           name: recipe.name,
-          image_url: recipe.image_url,
           ingredients: recipe.ingredients,
           instructions: recipe.instructions || [],
           dietaryTags: recipe.dietaryTags || [],
           source: 'gemini'
-        });
-        await newRecipe.save().catch(() => {});
-        return recipe;
+        }).save().catch(() => {});
+
+        return {
+          name: recipe.name,
+          image_url,
+          ingredients: recipe.ingredients,
+          instructions: recipe.instructions || [],
+          dietaryTags: recipe.dietaryTags || []
+        };
       })
     );
 
-    return res.json(recipesWithImages);
+    return res.json(response);
 
   } catch (error) {
     console.error('Error in getRecipesByIngredients:', error);
     return res.status(500).json({ error: error.message });
   }
 };
+
 
 const generateWeeklyMealPlan = async (req, res) => {
     try {
