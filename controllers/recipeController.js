@@ -750,7 +750,8 @@ const getSuggestionsByCategory = async (req, res) => {
       category,
       dietaryPreferences = [],
       page = 1,
-      limit = 3
+      limit = 3,
+      excludeIds = [] // NEW: Track already shown recipes
     } = req.body;
 
     if (!category) {
@@ -770,16 +771,28 @@ const getSuggestionsByCategory = async (req, res) => {
       query.dietaryTags = { $in: dietaryPreferences };
     }
 
+    // Exclude already shown recipes
+    if (excludeIds.length > 0) {
+      query._id = { $nin: excludeIds };
+    }
+
     /* -----------------------------
        EXISTING TITLES (ANTI-DUP)
     ----------------------------- */
-    const existingTitles = await Recipe.find(query)
+    const existingTitles = await Recipe.find({
+      category: new RegExp(`^${category}$`, 'i'),
+      ...(dietaryPreferences.length > 0 && { dietaryTags: { $in: dietaryPreferences } })
+    })
       .select('title -_id')
       .lean();
 
     const usedTitles = existingTitles.map(r => r.title);
 
-    let totalCount = existingTitles.length;
+    let totalCount = await Recipe.countDocuments({
+      category: new RegExp(`^${category}$`, 'i'),
+      ...(dietaryPreferences.length > 0 && { dietaryTags: { $in: dietaryPreferences } })
+    });
+    
     const requiredCount = page * limit;
 
     /* -----------------------------
@@ -870,21 +883,28 @@ ${names.map((n, i) => `${i + 1}. ${n}`).join('\n')}
         console.log(`✅ Saved: ${normalized.title}`);
       }
 
-      totalCount = await Recipe.countDocuments(query);
+      totalCount = await Recipe.countDocuments({
+        category: new RegExp(`^${category}$`, 'i'),
+        ...(dietaryPreferences.length > 0 && { dietaryTags: { $in: dietaryPreferences } })
+      });
     }
 
     /* -----------------------------
-       FETCH (SHUFFLED)
+       FETCH (PROPER PAGINATION)
     ----------------------------- */
-    const recipes = await Recipe.aggregate([
-      { $match: query },
-      { $sample: { size: limit } }
-    ]);
+    const skip = (page - 1) * limit;
+    
+    const recipes = await Recipe.find(query)
+      .sort({ createdAt: -1 }) // Or use any consistent sort
+      .skip(skip)
+      .limit(limit)
+      .lean();
 
     const hasMore = totalCount > page * limit;
 
     return res.json({
       recipes: recipes.map(r => ({
+        _id: r._id, // Include ID for tracking
         name: r.name,
         image_url: r.image_url,
         ingredients: r.ingredients,
