@@ -701,136 +701,124 @@ const getRecipeSuggestions = async (req, res) => {
     }
 };
 
-/* ===============================
-   HELPERS
-================================ */
-
-function normalizeTitle(title) {
-  return title.toLowerCase().trim().replace(/\s+/g, ' ');
-}
-
-// Normalize Gemini recipe structure
 function normalizeGeminiRecipe(recipe) {
   if (!recipe || typeof recipe !== 'object') return null;
 
-  const rawTitle = recipe.title || recipe.name || recipe.recipeName || '';
-  if (!rawTitle.trim()) return null;
+  const title =
+    recipe.title ||
+    recipe.name ||
+    recipe.recipeName ||
+    '';
 
-  const ingredients = Array.isArray(recipe.ingredients) ? recipe.ingredients : [];
-  const instructions = Array.isArray(recipe.instructions)
-    ? recipe.instructions.filter(s => typeof s === 'string' && s.trim())
+  if (!title.trim()) return null;
+
+  const ingredients = Array.isArray(recipe.ingredients)
+    ? recipe.ingredients
     : [];
+
+  let instructions = [];
+  if (Array.isArray(recipe.instructions)) {
+    instructions = recipe.instructions
+      .map(step => {
+        if (typeof step === 'string') return step;
+        if (typeof step === 'object' && step.description)
+          return step.description;
+        return null;
+      })
+      .filter(Boolean);
+  }
 
   if (!ingredients.length || !instructions.length) return null;
 
   return {
-    title: rawTitle.trim(),
-    normalizedTitle: normalizeTitle(rawTitle),
+    title: title.trim(),
     ingredients,
     instructions,
-    dietaryTags: Array.isArray(recipe.dietaryTags) ? recipe.dietaryTags : []
+    dietaryTags: Array.isArray(recipe.dietaryTags)
+      ? recipe.dietaryTags
+      : []
   };
 }
 
-// Safely parse JSON even if Gemini adds trailing commas
-function safeParseJSON(str) {
-  try {
-    return JSON.parse(str);
-  } catch (e) {
-    const cleaned = str.replace(/,\s*]/g, ']').replace(/,\s*}/g, '}');
-    try {
-      return JSON.parse(cleaned);
-    } catch {
-      return null;
-    }
-  }
-}
-
-// Fetch image from Pixabay
-async function fetchImageUrl(query) {
-  try {
-    const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY || "51392156-8eaa4d6a677c8e44156c40208";
-    let simplifiedQuery = query.split(":")[0].trim().replace(/[&:(),]/g, '');
-    const words = simplifiedQuery.split(" ");
-    if (words.length > 4) simplifiedQuery = words.slice(0, 4).join(" ");
-    simplifiedQuery = `${simplifiedQuery} food`;
-
-    const response = await axios.get('https://pixabay.com/api/', {
-      params: { key: PIXABAY_API_KEY, q: simplifiedQuery, image_type: 'photo', category: 'food', safesearch: true },
-      timeout: 5000
-    });
-    if (response.data.hits && response.data.hits.length > 0) {
-      return response.data.hits[0].webformatURL;
-    }
-  } catch (err) {
-    console.warn('⚠️ Image fetch error (non-critical):', err.message);
-  }
-  return '';
-}
-
-// Gemini API call
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
-
-async function callGeminiAPI(prompt) {
-  if (!GEMINI_API_KEY) throw new Error('GEMINI_API_KEY not configured');
-
-  const requestBody = { contents: [{ parts: [{ text: prompt }] }] };
-  const response = await axios.post(GEMINI_URL, requestBody, {
-    headers: { "Content-Type": "application/json" },
-    timeout: 60000
-  });
-
-  if (!response.data?.candidates?.[0]?.content?.parts?.[0]?.text) {
-    throw new Error('Invalid response structure from Gemini API');
-  }
-
-  let content = response.data.candidates[0].content.parts[0].text;
-  content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-
-  const parsed = safeParseJSON(content);
-  if (!parsed) throw new Error('Failed to parse Gemini response as JSON');
-  return parsed;
-}
-
-// ==================== CONTROLLER ====================
+/* ===============================
+   CONTROLLER
+================================ */
 
 const getSuggestionsByCategory = async (req, res) => {
   try {
-    const { category, dietaryPreferences = [], page = 1, limit = 3 } = req.body;
-    if (!category) return res.status(400).json({ error: 'Category is required' });
+    const {
+      category,
+      dietaryPreferences = [],
+      page = 1,
+      limit = 3
+    } = req.body;
+
+    if (!category) {
+      return res.status(400).json({ error: 'Category is required' });
+    }
 
     console.log(`📋 ${category} | Page ${page} | Limit ${limit}`);
 
-    // DB query for this category + dietaryTags
-    const query = { category };
-    if (dietaryPreferences.length) query.dietaryTags = { $in: dietaryPreferences };
+    /* -----------------------------
+       QUERY
+    ----------------------------- */
+    const query = {
+      category: new RegExp(`^${category}$`, 'i')
+    };
 
-    let totalCount = await Recipe.countDocuments(query);
+    if (dietaryPreferences.length > 0) {
+      query.dietaryTags = { $in: dietaryPreferences };
+    }
+
+    /* -----------------------------
+       EXISTING TITLES (ANTI-DUP)
+    ----------------------------- */
+    const existingTitles = await Recipe.find(query)
+      .select('title -_id')
+      .lean();
+
+    const usedTitles = existingTitles.map(r => r.title);
+
+    let totalCount = existingTitles.length;
     const requiredCount = page * limit;
 
-    // Generate recipes if DB has fewer than needed
-    if (totalCount < requiredCount && GEMINI_API_KEY) {
+    /* -----------------------------
+       GENERATE IF NEEDED
+    ----------------------------- */
+    if (totalCount < requiredCount && process.env.GEMINI_API_KEY) {
       const toGenerate = requiredCount - totalCount;
 
-      // Fetch existing titles to prevent duplicates
-      const existing = await Recipe.find(query).select('normalizedTitle -_id').lean();
-      const blockedTitles = existing.map(r => r.normalizedTitle);
+      console.log(`⚡ Generating ${toGenerate} new ${category} recipes`);
 
-      // STEP 1: Generate recipe names
+      /* ---- STEP 1: NAMES ---- */
       const namesPrompt = `
 Suggest ${toGenerate} UNIQUE ${category} recipes.
-Do NOT generate recipes similar to these:
-${blockedTitles.join('\n')}
+
+DO NOT repeat or closely resemble any of these:
+${usedTitles.slice(0, 30).join('\n')}
+
+Each recipe MUST be appropriate ONLY for the category "${category}".
+Lunch ≠ Dinner ≠ Breakfast.
+
 Return ONLY a JSON array of NEW recipe names.
 `;
+
       let names = await callGeminiAPI(namesPrompt);
       if (!Array.isArray(names)) names = [];
 
-      // STEP 2: Generate detailed recipes
-      if (names.length) {
-        const detailPrompt = `
-Create detailed ${category} recipes in valid JSON array.
+      if (!names.length) {
+        console.warn('⚠️ Gemini returned no names');
+      }
+
+      /* ---- STEP 2: DETAILS ---- */
+      const detailPrompt = `
+Create detailed recipes for the following ${category} dishes.
+
+Return ONLY valid JSON array.
+
+Allowed dietaryTags:
+vegetarian, vegan, gluten-free, dairy-free, keto, paleo, low-carb, halal, kosher
+
 Each recipe MUST include:
 - title
 - ingredients (array of strings)
@@ -839,44 +827,63 @@ Each recipe MUST include:
 Recipes:
 ${names.map((n, i) => `${i + 1}. ${n}`).join('\n')}
 `;
-        let generated = await callGeminiAPI(detailPrompt);
-        if (!Array.isArray(generated)) generated = [];
 
-        // STEP 3: Save to DB
-        for (const raw of generated) {
-          const recipe = normalizeGeminiRecipe(raw);
-          if (!recipe) continue;
+      let generated = await callGeminiAPI(detailPrompt);
+      if (!Array.isArray(generated)) generated = [];
 
-          const exists = await Recipe.exists({ normalizedTitle: recipe.normalizedTitle, category });
-          if (exists) continue; // skip duplicates
+      /* ---- STEP 3: SAVE ---- */
+      for (const raw of generated) {
+        const normalized = normalizeGeminiRecipe(raw);
+        if (!normalized) continue;
 
-          recipe.image_url = await fetchImageUrl(recipe.title);
+        const exists = await Recipe.exists({
+          title: normalized.title,
+          category
+        });
 
-          await Recipe.create({
-            title: recipe.title,
-            normalizedTitle: recipe.normalizedTitle,
-            name: recipe.title,
-            image_url: recipe.image_url,
-            ingredients: recipe.ingredients,
-            instructions: recipe.instructions,
-            dietaryTags: recipe.dietaryTags,
-            category,
-            source: 'gemini'
-          });
-
-          console.log(`✅ Saved: ${recipe.title}`);
+        if (exists) {
+          console.log(`⏭ Duplicate skipped: ${normalized.title}`);
+          continue;
         }
+
+        let image_url = '';
+        try {
+          image_url = await fetchImageUrl(normalized.title);
+        } catch {
+          image_url = '';
+        }
+
+        await Recipe.create({
+          title: normalized.title,
+          name: normalized.title,
+          image_url,
+          ingredients: normalized.ingredients,
+          instructions: normalized.instructions,
+          dietaryTags: sanitizeArray(normalized.dietaryTags, [
+            'vegetarian','vegan','gluten-free','dairy-free',
+            'keto','paleo','low-carb','halal','kosher'
+          ]),
+          category,
+          source: 'gemini'
+        });
+
+        console.log(`✅ Saved: ${normalized.title}`);
       }
+
       totalCount = await Recipe.countDocuments(query);
     }
 
-    // Fetch paginated recipes
-    const recipes = await Recipe.find(query)
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(limit);
+    /* -----------------------------
+       FETCH (SHUFFLED)
+    ----------------------------- */
+    const recipes = await Recipe.aggregate([
+      { $match: query },
+      { $sample: { size: limit } }
+    ]);
 
-    res.json({
+    const hasMore = totalCount > page * limit;
+
+    return res.json({
       recipes: recipes.map(r => ({
         name: r.name,
         image_url: r.image_url,
@@ -887,22 +894,29 @@ ${names.map((n, i) => `${i + 1}. ${n}`).join('\n')}
       pagination: {
         currentPage: page,
         totalCount,
-        hasMore: page * limit < totalCount,
+        hasMore,
         recipesPerPage: limit
       }
     });
 
   } catch (error) {
-    console.error('❌ getSuggestionsByCategory:', error.message);
-    res.status(500).json({
+    console.error('❌ getSuggestionsByCategory:', error);
+    return res.status(500).json({
       error: error.message,
       recipes: [],
-      pagination: { currentPage: 1, totalCount: 0, hasMore: false, recipesPerPage: 3 }
+      pagination: {
+        currentPage: 1,
+        totalCount: 0,
+        hasMore: false,
+        recipesPerPage: 3
+      }
     });
   }
 };
 
-module.exports = { getSuggestionsByCategory };
+module.exports = {
+  getSuggestionsByCategory
+};
 
 
 // Helper
