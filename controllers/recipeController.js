@@ -947,15 +947,17 @@ ${names.map((n, i) => `${i + 1}. ${n}`).join('\n')}
     const hasMore = true; // Always true since we can generate more
 
     return res.json({
-      recipes: recipes.map(r => ({
-        _id: r._id?.toString() || '',
-        name: r.name || r.title,
-        title: r.title || r.name,
-        image_url: r.image_url,
-        ingredients: r.ingredients,
-        instructions: r.instructions,
-        dietaryTags: r.dietaryTags
-      })),
+ recipes: await Promise.all(
+  recipes.map(async r => ({
+    _id: r._id?.toString() || '',
+    name: r.name || r.title,
+    title: r.title || r.name,
+    image_url: await fetchImageUrl(r.title || r.name), // ✅ FIX
+    ingredients: r.ingredients,
+    instructions: r.instructions,
+    dietaryTags: r.dietaryTags
+  }))
+),
       pagination: {
         currentPage: page,
         totalCount,
