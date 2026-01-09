@@ -432,11 +432,21 @@ Return ONLY valid JSON without any markdown, code blocks, or extra text:
         geminiRecipe.instructions = Array.isArray(geminiRecipe.instructions) 
             ? geminiRecipe.instructions 
             : [];
+        
+        // Filter dietary tags to only include valid enum values
+        const validDietaryTags = ['vegetarian', 'vegan', 'gluten-free', 'dairy-free', 'keto', 'paleo', 'halal', 'kosher'];
         geminiRecipe.dietaryTags = Array.isArray(geminiRecipe.dietaryTags)
             ? geminiRecipe.dietaryTags
-            : dietaryPreferences;
+                .map(tag => tag.toLowerCase().trim())
+                .filter(tag => validDietaryTags.includes(tag))
+            : dietaryPreferences.filter(pref => validDietaryTags.includes(pref.toLowerCase()));
+        
+        // Filter allergens to only include valid enum values
+        const validAllergens = ['nuts', 'dairy', 'eggs', 'soy', 'wheat', 'fish', 'shellfish', 'peanuts'];
         geminiRecipe.allergens = Array.isArray(geminiRecipe.allergens)
             ? geminiRecipe.allergens
+                .map(allergen => allergen.toLowerCase().trim())
+                .filter(allergen => validAllergens.includes(allergen))
             : [];
 
         // STEP 4: Fetch image
@@ -449,31 +459,66 @@ Return ONLY valid JSON without any markdown, code blocks, or extra text:
             geminiRecipe.image_url = '';
         }
 
-        // STEP 5: Save to MongoDB
+        // STEP 5: Save to MongoDB (ENHANCED)
         console.log('STEP 5: 💾 Saving to MongoDB...');
+        let savedRecipe = null;
         try {
+            // Check if Recipe model is available
+            if (!Recipe) {
+                throw new Error('Recipe model is not defined. Check your imports.');
+            }
+
             const newRecipe = new Recipe({
                 title: geminiRecipe.name,
                 name: geminiRecipe.name,
-                image_url: geminiRecipe.image_url,
-                ingredients: geminiRecipe.ingredients, // Already normalized above
+                image_url: geminiRecipe.image_url || '',
+                ingredients: geminiRecipe.ingredients,
                 instructions: geminiRecipe.instructions,
                 dietaryTags: geminiRecipe.dietaryTags,
                 allergens: geminiRecipe.allergens,
                 source: 'gemini'
             });
-            await newRecipe.save();
-            console.log('✅ Successfully saved to MongoDB with ID:', newRecipe._id);
+
+            // Validate before saving
+            const validationError = newRecipe.validateSync();
+            if (validationError) {
+                console.error('❌ Validation failed:', validationError.message);
+                throw validationError;
+            }
+
+            savedRecipe = await newRecipe.save();
+            console.log('✅ Successfully saved to MongoDB!');
+            console.log('   - Recipe ID:', savedRecipe._id);
+            console.log('   - Recipe Name:', savedRecipe.name);
+            
         } catch (saveError) {
-            console.error('⚠️ MongoDB save error (non-critical):', saveError.message);
-            console.error('Full error:', saveError);
+            console.error('❌ FAILED TO SAVE TO DATABASE:');
+            console.error('   - Error Type:', saveError.name);
+            console.error('   - Error Message:', saveError.message);
+            
+            if (saveError.name === 'ValidationError') {
+                console.error('   - Validation Errors:', saveError.errors);
+            }
+            
+            if (saveError.code === 11000) {
+                console.error('   - Duplicate key error. Recipe might already exist.');
+            }
+            
+            // Log the data that failed to save
+            console.error('   - Attempted to save:', JSON.stringify({
+                title: geminiRecipe.name,
+                ingredientsCount: geminiRecipe.ingredients?.length,
+                instructionsCount: geminiRecipe.instructions?.length
+            }, null, 2));
         }
 
         // STEP 6: Return response
         console.log('✅ Returning generated recipe to client');
         res.json({ 
             ...geminiRecipe, 
-            source: 'gemini' 
+            source: 'gemini',
+            savedToDatabase: !!savedRecipe,
+            databaseId: savedRecipe?._id
         });
 
     } catch (error) {
@@ -492,6 +537,8 @@ Return ONLY valid JSON without any markdown, code blocks, or extra text:
 };
 
 module.exports = { generateRecipe };
+
+
 const getRecipesByIngredients = async (req, res) => {
   try {
     const { ingredients = [], dietaryPreferences = [] } = req.body;
