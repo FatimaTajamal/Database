@@ -189,7 +189,8 @@ recipeSchema.index({ category: 1 });
 recipeSchema.index({ lastViewed: -1 });
 
 // Pre-save middleware to validate and filter dietary tags
-recipeSchema.pre('save', function(next) {
+// FIXED: Removed next() parameter - not needed in Mongoose 6+
+recipeSchema.pre('save', function() {
   const validDietaryTags = ['vegetarian', 'vegan', 'gluten-free', 'dairy-free', 'keto', 'paleo', 'halal', 'kosher'];
   const validAllergens = ['nuts', 'dairy', 'eggs', 'soy', 'wheat', 'fish', 'shellfish', 'peanuts'];
   
@@ -207,7 +208,7 @@ recipeSchema.pre('save', function(next) {
       .filter(allergen => validAllergens.includes(allergen));
   }
   
-  next();
+  // No next() call needed - just return or do nothing
 });
 
 module.exports = mongoose.model('Recipe', recipeSchema);
