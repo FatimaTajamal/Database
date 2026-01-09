@@ -135,23 +135,32 @@ async function fetchImageUrl(recipeName) {
         // Limit words
         query = query.split(' ').slice(0, 3).join(' ');
 
-        // Force food relevance
-        query = `${query} pakistani food`;
+        // 🔹 Strategy: Try multiple search approaches in order of specificity
+        const searchStrategies = [
+            query,                          // 1. Exact dish name (most specific)
+            `${query} dish`,               // 2. Dish name + "dish"
+            `${query} pakistani`,          // 3. Dish name + cuisine
+            `${query} food`                // 4. Dish name + "food" (fallback)
+        ];
 
-        const { data } = await axios.get('https://pixabay.com/api/', {
-            params: {
-                key: PIXABAY_API_KEY,
-                q: query,
-                image_type: 'photo',
-                category: 'food',
-                safesearch: true,
-                per_page: 3
-            },
-            timeout: 5000
-        });
+        for (const searchQuery of searchStrategies) {
+            const { data } = await axios.get('https://pixabay.com/api/', {
+                params: {
+                    key: PIXABAY_API_KEY,
+                    q: searchQuery,
+                    image_type: 'photo',
+                    category: 'food',
+                    safesearch: true,
+                    per_page: 3,
+                    order: 'popular'
+                },
+                timeout: 5000
+            });
 
-        if (data?.hits?.length) {
-            return data.hits[0].webformatURL;
+            // Return first successful result
+            if (data?.hits?.length) {
+                return data.hits[0].webformatURL;
+            }
         }
 
     } catch (err) {
@@ -162,87 +171,6 @@ async function fetchImageUrl(recipeName) {
 }
 
 
-// ✅ FIXED: Gemini API call without "role" field
-// async function callGeminiAPI(prompt) {
-//     try {
-//         if (!GEMINI_API_KEY || GEMINI_API_KEY === 'undefined') {
-//             throw new Error('GEMINI_API_KEY is not configured');
-//         }
-
-//         console.log('🔹 Calling Gemini API...');
-//         console.log('🔹 Prompt length:', prompt.length);
-
-//         // ✅ CORRECT REQUEST FORMAT - No "role" field!
-//         const requestBody = {
-//             contents: [{
-//                 parts: [{
-//                     text: prompt
-//                 }]
-//             }]
-//         };
-
-//         console.log('🔹 Request structure:', JSON.stringify({ 
-//             contentsCount: requestBody.contents.length,
-//             partsCount: requestBody.contents[0].parts.length 
-//         }));
-
-//         const response = await axios.post(
-//             GEMINI_URL,
-//             requestBody,
-//             {
-//                 headers: { "Content-Type": "application/json" },
-//                 timeout: 30000,
-//                 validateStatus: (status) => status < 500
-//             }
-//         );
-
-//         console.log('✅ Gemini Response Status:', response.status);
-
-//         if (response.status !== 200) {
-//             console.error('❌ Gemini Error Response:', JSON.stringify(response.data, null, 2));
-//             throw new Error(`Gemini API returned status ${response.status}: ${JSON.stringify(response.data)}`);
-//         }
-
-//         if (!response.data?.candidates?.[0]?.content?.parts?.[0]?.text) {
-//             console.error('❌ Invalid response structure:', JSON.stringify(response.data, null, 2));
-//             throw new Error('Invalid response structure from Gemini API');
-//         }
-
-//         let content = response.data.candidates[0].content.parts[0].text;
-        
-//         // Clean markdown formatting
-//         content = content.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-        
-//         console.log('🔹 Cleaned response (first 200 chars):', content.substring(0, 200));
-
-//         // Parse JSON
-//         const parsed = JSON.parse(content);
-//         console.log('✅ Successfully parsed JSON response');
-        
-//         return parsed;
-
-//     } catch (error) {
-//         console.error('❌ Gemini API Error Details:');
-//         console.error('- Type:', error.constructor.name);
-//         console.error('- Message:', error.message);
-        
-//         if (error.response) {
-//             console.error('- Status:', error.response.status);
-//             console.error('- Status Text:', error.response.statusText);
-//             console.error('- Response Data:', JSON.stringify(error.response.data, null, 2));
-//         }
-        
-//         if (error.code === 'ECONNABORTED') {
-//             throw new Error('Gemini API request timed out after 30 seconds');
-//         }
-        
-//         if (error.message.includes('JSON')) {
-//             throw new Error(`Failed to parse Gemini response as JSON: ${error.message}`);
-//         }
-        
-//         throw new Error(`Gemini API failed: ${error.message}`);
-//     }
-// }
 
 async function callGeminiAPI(prompt) {
     try {
