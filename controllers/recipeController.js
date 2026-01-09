@@ -342,16 +342,28 @@ const generateRecipe = async (req, res) => {
 
         if (recipe) {
             console.log('✅ FOUND IN DATABASE:', recipe.title || recipe.name);
+            
+            // Normalize ingredients to consistent format
+            const normalizedIngredients = (recipe.ingredients || []).map(ing => {
+                if (typeof ing === 'string') {
+                    return { name: ing, quantity: '' };
+                } else if (ing.name) {
+                    return { 
+                        name: ing.name, 
+                        quantity: ing.quantity || '' 
+                    };
+                }
+                return { name: String(ing), quantity: '' };
+            });
+            
             return res.json({
                 name: recipe.title || recipe.name,
                 image_url: recipe.image_url || '',
-                ingredients: (recipe.ingredients || []).map(ing => 
-                    typeof ing === 'string' ? { name: ing, quantity: '' } : ing
-                ),
+                ingredients: normalizedIngredients,
                 instructions: recipe.instructions || [],
                 dietaryTags: recipe.dietaryTags || [],
                 allergens: recipe.allergens || [],
-                source: 'database'
+                source: recipe.source || 'database'
             });
         }
 
@@ -401,9 +413,22 @@ Return ONLY valid JSON without any markdown, code blocks, or extra text:
         // STEP 3: Normalize and validate response
         console.log('STEP 3: 📋 Normalizing response...');
         geminiRecipe.name = geminiRecipe.name || query;
+        
+        // Ensure ingredients are in the correct format
         geminiRecipe.ingredients = Array.isArray(geminiRecipe.ingredients) 
-            ? geminiRecipe.ingredients 
+            ? geminiRecipe.ingredients.map(ing => {
+                if (typeof ing === 'string') {
+                    return { name: ing, quantity: '' };
+                } else if (ing.name) {
+                    return { 
+                        name: ing.name, 
+                        quantity: ing.quantity || '' 
+                    };
+                }
+                return { name: String(ing), quantity: '' };
+            })
             : [];
+            
         geminiRecipe.instructions = Array.isArray(geminiRecipe.instructions) 
             ? geminiRecipe.instructions 
             : [];
@@ -431,16 +456,17 @@ Return ONLY valid JSON without any markdown, code blocks, or extra text:
                 title: geminiRecipe.name,
                 name: geminiRecipe.name,
                 image_url: geminiRecipe.image_url,
-                ingredients: geminiRecipe.ingredients,
+                ingredients: geminiRecipe.ingredients, // Already normalized above
                 instructions: geminiRecipe.instructions,
                 dietaryTags: geminiRecipe.dietaryTags,
                 allergens: geminiRecipe.allergens,
                 source: 'gemini'
             });
             await newRecipe.save();
-            console.log('✅ Successfully saved to MongoDB');
+            console.log('✅ Successfully saved to MongoDB with ID:', newRecipe._id);
         } catch (saveError) {
             console.error('⚠️ MongoDB save error (non-critical):', saveError.message);
+            console.error('Full error:', saveError);
         }
 
         // STEP 6: Return response
@@ -465,6 +491,7 @@ Return ONLY valid JSON without any markdown, code blocks, or extra text:
     }
 };
 
+module.exports = { generateRecipe };
 const getRecipesByIngredients = async (req, res) => {
   try {
     const { ingredients = [], dietaryPreferences = [] } = req.body;
