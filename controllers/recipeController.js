@@ -122,25 +122,23 @@ const deleteRecipe = async (req, res) => {
 async function fetchImageUrl(recipeName) {
     try {
         const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY;
-
         if (!PIXABAY_API_KEY) return '';
 
-        // 🔹 Clean & normalize query
-        let query = recipeName
+        // Clean & normalize recipe name
+        const normalizedName = recipeName
             .toLowerCase()
-            .replace(/recipe|traditional|style|homemade/gi, '')
             .replace(/[^a-z\s]/g, '')
-            .trim();
+            .trim()
+            .split(' ')
+            .slice(0, 3)
+            .join(' ');
 
-        // Limit words
-        query = query.split(' ').slice(0, 3).join(' ');
-
-        // 🔹 Try different search strategies
+        // Search strategies with better descriptors
         const searchStrategies = [
-            { q: query, category: 'food' },                    // Just the name with food category
-            { q: query, category: '' },                         // Just the name, no category restriction
-            { q: `${query} indian`, category: 'food' },        // Try "indian" as it has more images
-            { q: `${query} south asian`, category: 'food' }    // Broader regional term
+            { q: `${normalizedName} dessert traditional south asian`, category: 'food' },
+            { q: `${normalizedName} sweet rice pudding`, category: 'food' },
+            { q: `${normalizedName} indian sweet dish`, category: 'food' },
+            { q: normalizedName, category: 'food' }
         ];
 
         for (const strategy of searchStrategies) {
@@ -149,30 +147,47 @@ async function fetchImageUrl(recipeName) {
                 q: strategy.q,
                 image_type: 'photo',
                 safesearch: true,
-                per_page: 5,
+                per_page: 10,
                 order: 'popular'
             };
 
-            // Only add category if specified
-            if (strategy.category) {
-                params.category = strategy.category;
-            }
+            if (strategy.category) params.category = strategy.category;
 
-            const { data } = await axios.get('https://pixabay.com/api/', {
-                params,
-                timeout: 5000
-            });
+            const { data } = await axios.get('https://pixabay.com/api/', { params, timeout: 5000 });
 
             if (data?.hits?.length) {
+                // Find the most relevant hit based on tags and user description
+                const hit = data.hits.find(h =>
+                    h.tags.toLowerCase().includes(normalizedName)
+                ) || data.hits[0];
+
                 console.log(`✅ Found image for "${recipeName}" using query: "${strategy.q}"`);
-                return data.hits[0].webformatURL;
+                return hit.webformatURL;
             }
         }
 
-        console.log(`❌ No image found for "${recipeName}"`);
+        console.log(`❌ No relevant image found for "${recipeName}" on Pixabay. Trying Unsplash fallback...`);
+
+        // Unsplash fallback (requires UNSPLASH_ACCESS_KEY)
+        if (process.env.UNSPLASH_ACCESS_KEY) {
+            const { data: unsplashData } = await axios.get('https://api.unsplash.com/search/photos', {
+                params: {
+                    query: `${recipeName} dessert`,
+                    per_page: 5,
+                    orientation: 'landscape'
+                },
+                headers: { Authorization: `Client-ID ${process.env.UNSPLASH_ACCESS_KEY}` },
+                timeout: 5000
+            });
+
+            if (unsplashData?.results?.length) {
+                console.log(`✅ Found image on Unsplash for "${recipeName}"`);
+                return unsplashData.results[0].urls.small;
+            }
+        }
 
     } catch (err) {
-        console.error('Pixabay error:', err.message);
+        console.error('Image fetch error:', err.message);
     }
 
     return '';
