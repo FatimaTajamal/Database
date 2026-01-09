@@ -904,8 +904,9 @@ ${names.map((n, i) => `${i + 1}. ${n}`).join('\n')}
 
     return res.json({
       recipes: recipes.map(r => ({
-        _id: r._id, // Include ID for tracking
-        name: r.name,
+        _id: r._id?.toString() || '', // Include ID for tracking
+        name: r.name || r.title,
+        title: r.title || r.name,
         image_url: r.image_url,
         ingredients: r.ingredients,
         instructions: r.instructions,
