@@ -694,14 +694,24 @@ Return ONLY valid JSON without any markdown or code blocks:
         }
 
         // Normalize the meal plan
-        const normalizedPlan = {};
-        days.forEach(day => {
-            normalizedPlan[day] = mealPlan[day].map(meal => ({
+        // Normalize the meal plan + fetch images
+const normalizedPlan = {};
+
+for (const day of days) {
+    normalizedPlan[day] = await Promise.all(
+        mealPlan[day].map(async meal => {
+            const recipeName = meal.recipe || meal.name || 'Recipe';
+
+            return {
                 meal: meal.meal || meal.type || 'Meal',
-                recipe: meal.recipe || meal.name || 'Recipe',
+                recipe: recipeName,
+                image_url: await fetchImageUrl(recipeName), // ✅ FIX
                 calories: parseInt(meal.calories) || 0
-            }));
-        });
+            };
+        })
+    );
+}
+
 
         console.log('✅ Returning generated meal plan to client');
         res.json({
