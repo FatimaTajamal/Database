@@ -135,33 +135,41 @@ async function fetchImageUrl(recipeName) {
         // Limit words
         query = query.split(' ').slice(0, 3).join(' ');
 
-        // 🔹 Strategy: Try multiple search approaches in order of specificity
+        // 🔹 Try different search strategies
         const searchStrategies = [
-            query,                          // 1. Exact dish name (most specific)
-            `${query} dish`,               // 2. Dish name + "dish"
-            `${query} pakistani`,          // 3. Dish name + cuisine
-            `${query} food`                // 4. Dish name + "food" (fallback)
+            { q: query, category: 'food' },                    // Just the name with food category
+            { q: query, category: '' },                         // Just the name, no category restriction
+            { q: `${query} indian`, category: 'food' },        // Try "indian" as it has more images
+            { q: `${query} south asian`, category: 'food' }    // Broader regional term
         ];
 
-        for (const searchQuery of searchStrategies) {
+        for (const strategy of searchStrategies) {
+            const params = {
+                key: PIXABAY_API_KEY,
+                q: strategy.q,
+                image_type: 'photo',
+                safesearch: true,
+                per_page: 5,
+                order: 'popular'
+            };
+
+            // Only add category if specified
+            if (strategy.category) {
+                params.category = strategy.category;
+            }
+
             const { data } = await axios.get('https://pixabay.com/api/', {
-                params: {
-                    key: PIXABAY_API_KEY,
-                    q: searchQuery,
-                    image_type: 'photo',
-                    category: 'food',
-                    safesearch: true,
-                    per_page: 3,
-                    order: 'popular'
-                },
+                params,
                 timeout: 5000
             });
 
-            // Return first successful result
             if (data?.hits?.length) {
+                console.log(`✅ Found image for "${recipeName}" using query: "${strategy.q}"`);
                 return data.hits[0].webformatURL;
             }
         }
+
+        console.log(`❌ No image found for "${recipeName}"`);
 
     } catch (err) {
         console.error('Pixabay error:', err.message);
@@ -169,7 +177,6 @@ async function fetchImageUrl(recipeName) {
 
     return '';
 }
-
 
 
 async function callGeminiAPI(prompt) {
