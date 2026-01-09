@@ -704,25 +704,17 @@ const getRecipeSuggestions = async (req, res) => {
 function normalizeGeminiRecipe(recipe) {
   if (!recipe || typeof recipe !== 'object') return null;
 
-  const title =
-    recipe.title ||
-    recipe.name ||
-    recipe.recipeName ||
-    '';
-
+  const title = recipe.title || recipe.name || recipe.recipeName || '';
   if (!title.trim()) return null;
 
-  const ingredients = Array.isArray(recipe.ingredients)
-    ? recipe.ingredients
-    : [];
+  const ingredients = Array.isArray(recipe.ingredients) ? recipe.ingredients : [];
 
   let instructions = [];
   if (Array.isArray(recipe.instructions)) {
     instructions = recipe.instructions
       .map(step => {
         if (typeof step === 'string') return step;
-        if (typeof step === 'object' && step.description)
-          return step.description;
+        if (typeof step === 'object' && step.description) return step.description;
         return null;
       })
       .filter(Boolean);
@@ -734,9 +726,7 @@ function normalizeGeminiRecipe(recipe) {
     title: title.trim(),
     ingredients,
     instructions,
-    dietaryTags: Array.isArray(recipe.dietaryTags)
-      ? recipe.dietaryTags
-      : []
+    dietaryTags: Array.isArray(recipe.dietaryTags) ? recipe.dietaryTags : []
   };
 }
 
@@ -751,14 +741,14 @@ const getSuggestionsByCategory = async (req, res) => {
       dietaryPreferences = [],
       page = 1,
       limit = 3,
-      excludeIds = [] // NEW: Track already shown recipes
+      excludeIds = [] // Track already shown recipes
     } = req.body;
 
     if (!category) {
       return res.status(400).json({ error: 'Category is required' });
     }
 
-    console.log(`📋 ${category} | Page ${page} | Limit ${limit}`);
+    console.log(`📋 ${category} | Page ${page} | Limit ${limit} | Excluding ${excludeIds.length} IDs`);
 
     /* -----------------------------
        QUERY
@@ -788,20 +778,25 @@ const getSuggestionsByCategory = async (req, res) => {
 
     const usedTitles = existingTitles.map(r => r.title);
 
+    // Count total recipes (including those we're excluding)
     let totalCount = await Recipe.countDocuments({
       category: new RegExp(`^${category}$`, 'i'),
       ...(dietaryPreferences.length > 0 && { dietaryTags: { $in: dietaryPreferences } })
     });
     
-    const requiredCount = page * limit;
+    // Count available recipes (excluding already shown ones)
+    const availableCount = await Recipe.countDocuments(query);
+    
+    const requiredCount = limit; // We need 'limit' recipes for this page
+    console.log(`📊 Available: ${availableCount}, Required: ${requiredCount}, Total: ${totalCount}`);
 
     /* -----------------------------
        GENERATE IF NEEDED
     ----------------------------- */
-    if (totalCount < requiredCount && process.env.GEMINI_API_KEY) {
-      const toGenerate = requiredCount - totalCount;
+    if (availableCount < requiredCount && process.env.GEMINI_API_KEY) {
+      const toGenerate = requiredCount - availableCount;
 
-      console.log(`⚡ Generating ${toGenerate} new ${category} recipes`);
+      console.log(`⚡ Generating ${toGenerate} new ${category} recipes (available: ${availableCount}, need: ${requiredCount})`);
 
       /* ---- STEP 1: NAMES ---- */
       const namesPrompt = `
@@ -811,7 +806,7 @@ DO NOT repeat or closely resemble any of these:
 ${usedTitles.slice(0, 30).join('\n')}
 
 Each recipe MUST be appropriate ONLY for the category "${category}".
-Lunch ≠ Dinner ≠ Breakfast.
+Lunch ≠ Dinner ≠ Breakfast ≠ Snacks ≠ Brunch.
 
 Return ONLY a JSON array of NEW recipe names.
 `;
@@ -883,28 +878,30 @@ ${names.map((n, i) => `${i + 1}. ${n}`).join('\n')}
         console.log(`✅ Saved: ${normalized.title}`);
       }
 
+      // Recalculate total count after generation
       totalCount = await Recipe.countDocuments({
         category: new RegExp(`^${category}$`, 'i'),
         ...(dietaryPreferences.length > 0 && { dietaryTags: { $in: dietaryPreferences } })
       });
+      
+      console.log(`✅ Generation complete. Total recipes in DB: ${totalCount}`);
     }
 
     /* -----------------------------
        FETCH (PROPER PAGINATION)
     ----------------------------- */
-    const skip = (page - 1) * limit;
-    
     const recipes = await Recipe.find(query)
-      .sort({ createdAt: -1 }) // Or use any consistent sort
-      .skip(skip)
+      .sort({ createdAt: -1 })
       .limit(limit)
       .lean();
 
-    const hasMore = totalCount > page * limit;
+    console.log(`📤 Returning ${recipes.length} recipes to client`);
+
+    const hasMore = true; // Always true since we can generate more
 
     return res.json({
       recipes: recipes.map(r => ({
-        _id: r._id?.toString() || '', // Include ID for tracking
+        _id: r._id?.toString() || '',
         name: r.name || r.title,
         title: r.title || r.name,
         image_url: r.image_url,
